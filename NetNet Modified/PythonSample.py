@@ -58,19 +58,21 @@ def receive_new_frame(data_dict):
 
 
 def receive_new_frame_with_data(data_dict):
-    order_list = ["frameNumber", "markerSetCount", "unlabeledMarkersCount", #type: ignore  # noqa F841
-                  "rigidBodyCount", "skeletonCount", "imuCount", "gpioCount",
-                  "labeledMarkerCount", "timecode", "timecodeSub", "timestamp",
-                  "isRecording", "trackedModelsChanged", "offset", "mocap_data"] #type: ignore  # noqa E501
-    dump_args = True
-    if dump_args is True:
-        out_string = "    "
-        for key in data_dict:
-            out_string += key + "= "
-            if key in data_dict:
-                out_string += str(data_dict[key]) + " "
-            out_string += "/"
-        print(out_string)
+    # Check if 'mocap_data' or rigid body counts exist and are greater than 0
+    # This prevents thousands of empty terminal lines when tracking is lost
+    rb_count = data_dict.get("rigidBodyCount", 0)
+    
+    if rb_count > 0:
+        dump_args = True
+        if dump_args is True:
+            out_string = "    "
+            for key in data_dict:
+                out_string += key + "= "
+                if key in data_dict:
+                    out_string += str(data_dict[key]) + " "
+                out_string += "/"
+            print(out_string)
+
 
 
 # This is a callback function that gets connected to the NatNet client.
@@ -85,7 +87,7 @@ def receive_rigid_body_frame(new_id, position, rotation):
     
     # Format data into a lean, comma-separated string
     # Structured to match MATLAB: ID, qX, qY, qZ, qW, X, Y, Z (8 total elements)
-    data_string = f"{new_id},{qx},{qy},{qz},{qw},{x},{y},{z}"
+    data_string = f"{new_id},{qx},{qy},{qz},{qw},{x},{y},{z}\n"
     
     # 2. Convert to bytes and broadcast over the UDP port
     try:
