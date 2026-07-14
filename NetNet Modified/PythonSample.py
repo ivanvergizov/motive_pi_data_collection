@@ -26,10 +26,12 @@ import DataDescriptions
 import MoCapData
 
 import socket
+import struct
 
 # Setup UDP socket to stream locally
 UDP_IP = "127.0.0.1"  # Localhost
 UDP_PORT = 7000       # Target port matching MATLAB
+PACKET = struct.Struct("<8d")
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 # Global control variables
@@ -87,12 +89,20 @@ def receive_rigid_body_frame(new_id, position, rotation):
     
     # Format data into a lean, comma-separated string
     # Structured to match MATLAB: ID, qX, qY, qZ, qW, X, Y, Z (8 total elements)
-    data_string = f"{new_id},{qx},{qy},{qz},{qw},{x},{y},{z}\n"
-    
-    # 2. Convert to bytes and broadcast over the UDP port
+    packet = PACKET.pack(
+        float(new_id),
+        float(qx),
+        float(qy),
+        float(qz),
+        float(qw),
+        float(x),
+        float(y),
+        float(z)
+    )
+
     try:
-        sock.sendto(data_string.encode('utf-8'), (UDP_IP, UDP_PORT))
-    except Exception as e:
+        sock.sendto(packet, (UDP_IP, UDP_PORT))
+    except Exception:
         pass
 
 

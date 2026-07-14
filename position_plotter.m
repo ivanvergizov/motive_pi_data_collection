@@ -115,9 +115,7 @@ limits = [min(X_mat)-pad, max(X_mat)+pad, ...
           min(Y_mat)-pad, max(Y_mat)+pad, ...
           min(Z_mat)-pad, max(Z_mat)+pad];
 
-% Instantiate visualizer functions
-vis = RigidBodyVisualizer();
-hGraphics = vis.initWindow(limits);
+hGraphics = RigidBodyVisualizer(limits);
 title(['Tracking ', targetObj]);
 
 % Playback Loop
@@ -127,6 +125,6 @@ for k = 1:stepSize:length(X_mat)
     currentQuat = [qW(k), qX(k), qY(k), qZ(k)];
     
     % Update scene via helper
-    vis.updateFrame(hGraphics, currentPos, currentQuat);
+    updateRigidBodyVisualizer(hGraphics, currentPos, currentQuat);
     pause(0.01);
 end
