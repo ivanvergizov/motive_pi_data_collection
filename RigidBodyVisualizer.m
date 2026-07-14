@@ -1,4 +1,8 @@
-function hGraphics = RigidBodyVisualizer(axisLimits)
+function hGraphics = RigidBodyVisualizer(axisLimits, trailPoints)
+
+if nargin < 2 || isempty(trailPoints)
+    trailPoints = 500;
+end
 
 figure('Color', 'w');
 grid on;
@@ -14,6 +18,6 @@ if nargin > 0 && ~isempty(axisLimits)
     axis(axisLimits);
 end
 
-hGraphics = createRigidBodyGraphics('#4DBBD5');
+hGraphics = createRigidBodyGraphics([0.3010 0.7450 0.9330], trailPoints);
 
 end

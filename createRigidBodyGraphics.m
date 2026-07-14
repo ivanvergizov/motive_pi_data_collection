@@ -1,4 +1,8 @@
-function hGraphics = createRigidBodyGraphics(bodyColor)
+function hGraphics = createRigidBodyGraphics(bodyColor, maxTrailPoints)
+
+if nargin < 2 || isempty(maxTrailPoints)
+    maxTrailPoints = 500;
+end
 
 scale = 0.15;
 
@@ -38,7 +42,7 @@ hGraphics.trailingPath = animatedline( ...
     'Color', bodyColor, ...
     'LineWidth', 1, ...
     'LineStyle', ':', ...
-    'MaximumNumPoints', 500);
+    'MaximumNumPoints', maxTrailPoints);
 
 hGraphics.baseVertices = baseVerts;
 

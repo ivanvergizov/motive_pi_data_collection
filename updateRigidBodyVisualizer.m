@@ -1,4 +1,5 @@
 function updateRigidBodyVisualizer(hGraphics, pos, quat)
+
 R = quatToRotMatMotiveToMatlab(quat);
 
 transformedVertices = ...
@@ -22,5 +23,4 @@ addpoints( ...
     hGraphics.trailingPath, ...
     pos(1), pos(2), pos(3));
 
-drawnow limitrate;
 end

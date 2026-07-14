@@ -88,7 +88,7 @@ limits = [
     min(Z_mat)-pad, max(Z_mat)+pad
 ];
 
-hGraphics = RigidBodyVisualizer(limits, trailPoints);
+hGraphics = RigidBodyVisualizer(limits);
 title("Tracking " + targetObj);
 
 stepSize = 5;

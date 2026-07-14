@@ -19,6 +19,7 @@ axis([-1 3 -1 3 -0.5 2]);
 title('OptiTrack Live');
 
 maxBodies = 256;
+trailPoints = 500;
 
 bodyActive = false(maxBodies, 1);
 activeBodies = cell(maxBodies, 1);
@@ -37,6 +38,8 @@ disp('Listening on Port 7000');
 try
     while ishandle(fig)
 
+        didRender = false;
+
         if u.NumBytesAvailable > 0
 
             latestBatchUpdates = nan(maxBodies, 8);
@@ -46,9 +49,9 @@ try
 
                 rawBytes = read(u, packetBytes, "uint8");
                 vals = typecast(uint8(rawBytes), "double");
-            
-                rb_id = vals(1);
-            
+
+                rb_id = round(vals(1));
+
                 if rb_id >= 1 && rb_id <= maxBodies && ~isnan(rb_id)
                     latestBatchUpdates(rb_id, :) = vals;
                     latestValid(rb_id) = true;
@@ -84,7 +87,8 @@ try
                         disp(['Detected Rigid Body ID: ', num2str(rb_id)]);
 
                         randomColor = rand(1, 3);
-                        activeBodies{rb_id} = createRigidBodyGraphics(randomColor);
+                        activeBodies{rb_id} = ...
+                            createRigidBodyGraphics(randomColor, trailPoints);
 
                         lastPos(rb_id, :) = rawPos;
                         lastQuat(rb_id, :) = rawQuat;
@@ -121,11 +125,18 @@ try
 
                     if mod(frameCounter(rb_id), renderEvery) == 0
                         hGraphics = activeBodies{rb_id};
+
                         updateRigidBodyVisualizer( ...
                             hGraphics, smoothedPos, smoothedQuat);
+
+                        didRender = true;
                     end
                 end
             end
+        end
+
+        if didRender
+            drawnow limitrate;
         end
 
         pause(0.001);

@@ -2,124 +2,139 @@ if exist('u', 'var')
     clear u;
 end
 
-fig = figure('Name', 'OptiTrack Stream', 'NumberTitle', 'off', 'Color', 'w');
-grid on; hold on; view(3); axis equal;
-xlabel('X Position (m)'); ylabel('Y Position (m)'); zlabel('Vertical Height (m)');
+fig = figure('Name', 'OptiTrack Stream', ...
+    'NumberTitle', 'off', ...
+    'Color', 'w');
 
-% room size
-axis([-1 3 -1 3 -0.5 2]); 
+grid on;
+hold on;
+view(3);
+axis equal;
+
+xlabel('X Position (m)');
+ylabel('Y Position (m)');
+zlabel('Vertical Height (m)');
+
+axis([-1 3 -1 3 -0.5 2]);
 title('OptiTrack Live');
 
-renderEvery = 3;      % Render every 3rd processed update
-frameCounter = zeros(256, 1);
+maxBodies = 256;
 
-% Create dynamic tracking maps
-activeBodies   = containers.Map('KeyType', 'double', 'ValueType', 'any');
-historyBodies  = containers.Map('KeyType', 'double', 'ValueType', 'any');
+bodyActive = false(maxBodies, 1);
+activeBodies = cell(maxBodies, 1);
 
-% Open Port 7000
-u = udpport("LocalPort", 7000); 
-configureTerminator(u, "LF"); 
+lastPos  = zeros(maxBodies, 3);
+lastQuat = zeros(maxBodies, 4);
+
+frameCounter = zeros(maxBodies, 1);
+renderEvery = 3;
+
+u = udpport("LocalPort", 7000, "ByteOrder", "little-endian");
+packetBytes = 64;
 
 disp('Listening on Port 7000');
-clc;
 
 try
     while ishandle(fig)
-        
-        bytesAvail = u.NumBytesAvailable;
-        if bytesAvail > 0
+
+        if u.NumBytesAvailable > 0
+
+            latestBatchUpdates = nan(maxBodies, 8);
+            latestValid = false(maxBodies, 1);
+
+            while u.NumBytesAvailable >= packetBytes
+
+                rawBytes = read(u, packetBytes, "uint8");
+                vals = typecast(uint8(rawBytes), "double");
             
-            latestBatchUpdates = containers.Map('KeyType', 'double', 'ValueType', 'any');
+                rb_id = vals(1);
             
-            % Drain network buffer queue
-            while u.NumBytesAvailable > 0
-                raw_data = readline(u);
-                if raw_data == "", continue; end
-                
-                split_data = split(strip(raw_data), ",");
-                if length(split_data) >= 8
-                    rb_id = str2double(split_data(1));
-                    latestBatchUpdates(rb_id) = split_data(1:8); 
+                if rb_id >= 1 && rb_id <= maxBodies && ~isnan(rb_id)
+                    latestBatchUpdates(rb_id, :) = vals;
+                    latestValid(rb_id) = true;
                 end
             end
-            
-            % Process batch allocations
-            allBatchKeys = keys(latestBatchUpdates);
+
+            allBatchKeys = find(latestValid);
+
             for i = 1:length(allBatchKeys)
-                currentKey = allBatchKeys{i};
-                frameData = latestBatchUpdates(currentKey);
-                
-                rb_id = str2double(frameData(1));
-                qX    = str2double(frameData(2));
-                qY    = str2double(frameData(3));
-                qZ    = str2double(frameData(4));
-                qW    = str2double(frameData(5));
-                rawX  = str2double(frameData(6));
-                rawY  = str2double(frameData(7));
-                rawZ  = str2double(frameData(8));
-                
-                % Workspace axis remapping (Motive Y-up to MATLAB Z-up)
+
+                rb_id = allBatchKeys(i);
+                frameData = latestBatchUpdates(rb_id, :);
+
+                qX   = frameData(2);
+                qY   = frameData(3);
+                qZ   = frameData(4);
+                qW   = frameData(5);
+                rawX = frameData(6);
+                rawY = frameData(7);
+                rawZ = frameData(8);
+
                 x_mat = rawX;
-                y_mat = rawZ; 
-                z_mat = rawY; 
-                
-                if ~isnan(rb_id) && ~isnan(x_mat) && ~isnan(y_mat) && ~isnan(z_mat) && ...
+                y_mat = rawZ;
+                z_mat = rawY;
+
+                if ~isnan(x_mat) && ~isnan(y_mat) && ~isnan(z_mat) && ...
                    ~isnan(qW) && ~isnan(qX) && ~isnan(qY) && ~isnan(qZ)
-                    
+
                     rawPos  = [x_mat, y_mat, z_mat];
                     rawQuat = [qW, qX, qY, qZ];
-                    
-                    % Dynamic object enrollment
-                    if ~isKey(activeBodies, rb_id)
+
+                    if ~bodyActive(rb_id)
                         disp(['Detected Rigid Body ID: ', num2str(rb_id)]);
+
                         randomColor = rand(1, 3);
-                        hNew = createRigidBodyGraphics(randomColor);
-                        activeBodies(rb_id) = hNew;
-                        hState.lastPos  = rawPos;
-                        hState.lastQuat = rawQuat;
-                        historyBodies(rb_id) = hState;
+                        activeBodies{rb_id} = createRigidBodyGraphics(randomColor, trailPoints);
+
+                        lastPos(rb_id, :) = rawPos;
+                        lastQuat(rb_id, :) = rawQuat;
+
+                        bodyActive(rb_id) = true;
                     end
-                    
-                    % --- ADAPTIVE FILTER MATH ---
-                    state = historyBodies(rb_id);
-                    
-                    % Calculate physical velocity step distance since last frame
-                    velocityDistance = norm(rawPos - state.lastPos);
-                    
-                    % Compute dynamic smoothing factor based on velocity
-                    % If moving fast, alpha climbs toward 0.8 (low filter, zero lag)
-                    % If staying still, alpha drops toward 0.05 (heavy filter)
-                    dynamicAlpha = 0.05 + 0.75 * (1 - exp(-velocityDistance * 35));
-                    
-                    % Smooth position coordinates
-                    smoothedPos = (dynamicAlpha * rawPos) + ((1 - dynamicAlpha) * state.lastPos);
-                    
-                    % Coordinate sign-flipping neighborhood ambiguities for quaternions
-                    if dot(rawQuat, state.lastQuat) < 0
+
+                    prevPos  = lastPos(rb_id, :);
+                    prevQuat = lastQuat(rb_id, :);
+
+                    velocityDistance = norm(rawPos - prevPos);
+
+                    dynamicAlpha = ...
+                        0.05 + 0.75 * (1 - exp(-velocityDistance * 35));
+
+                    smoothedPos = ...
+                        (dynamicAlpha * rawPos) + ...
+                        ((1 - dynamicAlpha) * prevPos);
+
+                    if dot(rawQuat, prevQuat) < 0
                         rawQuat = -rawQuat;
                     end
-                    smoothedQuat = (dynamicAlpha * rawQuat) + ((1 - dynamicAlpha) * state.lastQuat);
+
+                    smoothedQuat = ...
+                        (dynamicAlpha * rawQuat) + ...
+                        ((1 - dynamicAlpha) * prevQuat);
+
                     smoothedQuat = smoothedQuat / norm(smoothedQuat);
-                    
-                    % Save state back to history container
-                    state.lastPos  = smoothedPos;
-                    state.lastQuat = smoothedQuat;
-                    historyBodies(rb_id) = state;
-                    
-                    % Render scene update frame
-                    hGraphics = activeBodies(rb_id);
-                    updateRigidBodyVisualizer(hGraphics, smoothedPos, smoothedQuat);
+
+                    lastPos(rb_id, :)  = smoothedPos;
+                    lastQuat(rb_id, :) = smoothedQuat;
+
+                    frameCounter(rb_id) = frameCounter(rb_id) + 1;
+
+                    if mod(frameCounter(rb_id), renderEvery) == 0
+                        hGraphics = activeBodies{rb_id};
+                        updateRigidBodyVisualizer( ...
+                            hGraphics, smoothedPos, smoothedQuat);
+                    end
                 end
             end
         end
-        
-        pause(0.001); 
+        drawnow limitrate;
+        pause(0.001);
     end
+
 catch ME
     disp('Stream interrupted.');
     disp(ME.message);
 end
 
 clear u;
-disp('UDP Port safely disconnected.');
+disp('UDP Port disconnected.');
