@@ -22,14 +22,16 @@ smoothWindow = 121;
 
 objectsToRender = "all";   % use "all" or ["TestRigid1", "OtherBody"]
 stepSize = 1;              % 1 = every frame, 2 = every other frame
-videoFrameRate = 60;
+videoFrameRate = 30;
 videoQuality = 95;
 
-figureWidth = 1920;
-figureHeight = 1080;
+figureWidth = 3840;
+figureHeight = 1600;
 
-trailPoints = 2000;
-pad = 0.3;
+trailDurationSeconds = 10;
+trailPoints = inf; % round(trailDurationSeconds * videoFrameRate) or inf
+
+pad = 0.2;
 
 %% Load data
 
@@ -197,10 +199,30 @@ for vf = 1:numVideoFrames
     drawnow;
 
     frame = getframe(fig);
-    writeVideo(v, frame);
+    img = frame.cdata;
+    
+    img = imresize(img, [figureHeight, figureWidth]);
+    
+    img = makeFrameEvenSize(img);
+    
+    writeVideo(v, img);
 end
 
 close(v);
 
 disp("Saved video:");
 disp(outputPath);
+
+function img = makeFrameEvenSize(img)
+
+[h, w, ~] = size(img);
+
+if mod(h, 2) ~= 0
+    img = img(1:end-1, :, :);
+end
+
+if mod(w, 2) ~= 0
+    img = img(:, 1:end-1, :);
+end
+
+end
