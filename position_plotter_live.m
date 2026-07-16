@@ -18,7 +18,7 @@ zlabel('Vertical Height (m)');
 axis([-1 3 -1 3 -0.5 2]);
 title('OptiTrack Live');
 
-maxBodies = 256;
+maxBodies = 100;
 trailPoints = 500;
 
 bodyActive = false(maxBodies, 1);
