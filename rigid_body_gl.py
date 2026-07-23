@@ -9,9 +9,9 @@ BODY_SHAPES = {
     "tetra", "rect"
 }
 
-def create_tetra_vertices(length: float = 0.1,
-                          width: float = 0.07,
-                          height: float = 0.15) -> np.ndarray:
+def create_tetra_vertices(length: float = 0.09,
+                          width: float = 0.065,
+                          height: float = 0.025) -> np.ndarray:
     nose_x = length / 2.0
     base_x = -length / 2.0
     half_width = width / 2.0
@@ -79,10 +79,10 @@ def create_rect_faces() -> np.ndarray:
         dtype=int,
     )
 
-def create_body_vertices(shape: str,
-                         length: float,
-                         width: float,
-                         height: float) -> np.ndarray:
+def create_body_vertices(shape: str = "tetra",
+                         length: float = 0.09,
+                         width: float = 0.065,
+                         height: float = 0.025) -> np.ndarray:
     if shape == "tetra":
         return create_tetra_vertices(
             length=length, width=width, height=height)
