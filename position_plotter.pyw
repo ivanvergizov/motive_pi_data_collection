@@ -81,7 +81,7 @@ def color_for_curve(curve_index: int) -> str:
 class BodyDisplaySettings(TypedDict):
     shape: str
     length: float
-    width:float
+    width: float
     height: float
     color: str
 
@@ -212,7 +212,7 @@ class PositionPlotterWindow(QMainWindow):
         self.time_slider = QSlider(Qt.Orientation.Horizontal)
         self.time_slider.setMinimum(0)
         self.time_slider.setMaximum(0)
-        self.time_slider.valueChanged.connect(self.set_3d_time)
+        self.time_slider.valueChanged.connect(self.set_3d_time_from_slider)
 
         self.time_label = QLabel("Time: 0.000 s | Frame: 0")
 
@@ -221,6 +221,7 @@ class PositionPlotterWindow(QMainWindow):
         self.playback_speed_spinbox.setMaximum(5.00)
         self.playback_speed_spinbox.setSingleStep(0.25)
         self.playback_speed_spinbox.setValue(1.00)
+        self.playback_speed_spinbox.setDecimals(2)
         self.playback_speed_spinbox.setPrefix("Speed: ")
         self.playback_speed_spinbox.setSuffix("x")
         self.playback_speed_spinbox.valueChanged.connect(self.set_playback_speed)
@@ -326,10 +327,14 @@ class PositionPlotterWindow(QMainWindow):
                 body.position_z
             )
 
-        self.current_frame_idx = 0
-        self.frame_slider.setMaximum(len(self.session.time) - 1)
-        self.frame_slider.setValue(0)
-        self.frame_label.setText("Frame: 0")
+        duration_ms = int(round(self.session.time[-1] * 1000.0))
+
+        self.time_slider.blockSignals(True)
+        self.time_slider.setMaximum(duration_ms)
+        self.time_slider.setValue(0)
+        self.time_slider.blockSignals(False)
+
+        self.set_3d_time(0.0, update_slider=True)
 
         num_bodies = len(self.session.bodies)
         session_duration = self.session.time[-1]
@@ -422,11 +427,6 @@ class PositionPlotterWindow(QMainWindow):
                 )
                     rot_curve_idx += 1
 
-        if apply_smoothing:
-            smoothing_text = f"with {smoothing_window} frame smoothing"
-        else:
-            smoothing_text = ""
-
 
         self.status_label.setText(
             f"Plotting {len(selected_bodies)} bodies and {len(selected_signals)} signals"
@@ -447,25 +447,25 @@ class PositionPlotterWindow(QMainWindow):
         selected_bodies = self.selected_body_names()
 
         if not selected_bodies:
+            self.clear_3d_meshes()
             return
         
         self.clear_3d_meshes()
 
-        frame_index = self.current_frame_idx
+        frame_idx = self.current_frame_idx
 
-        for body_index, body_name in enumerate(selected_bodies):
+        for body_name in selected_bodies:
             body = self.session.bodies[body_name]
-            body_color = color_for_curve(body_index)
 
-            position_display = self.display_positions[body_name][frame_index]
+            position_display = self.display_positions[body_name][frame_idx]
 
             settings = self.body_display_settings[body_name]
 
             base_vertices = create_body_vertices(
-                shape=str(settings["shape"]),
-                length=float(settings["length"]),
-                width=float(settings["width"]),
-                height=float(settings["height"])
+                shape=settings["shape"],
+                length=settings["length"],
+                width=settings["width"],
+                height=settings["height"]
             )
 
             body_color = str(settings["color"])
@@ -473,47 +473,139 @@ class PositionPlotterWindow(QMainWindow):
             transformed_vertices = transform_body_vertices(
                 base_vertices=base_vertices,
                 position_transform=position_display,
-                qx=body.rotation_x[frame_index],
-                qy=body.rotation_y[frame_index],
-                qz=body.rotation_z[frame_index],
-                qw=body.rotation_w[frame_index],
+                qx=body.rotation_x[frame_idx],
+                qy=body.rotation_y[frame_idx],
+                qz=body.rotation_z[frame_idx],
+                qw=body.rotation_w[frame_idx],
             )
 
             mesh_item = make_body_mesh_item(
                 vertices=transformed_vertices,
                 color=body_color,
-                shape="tetra"
+                shape=settings["shape"]
             )
 
             self.view_3d_widget.addItem(mesh_item)
             self.mesh_items.append(mesh_item)
 
-        self.frame_label.setText(f"Frame: {frame_index}")
+        sample_time_s = float(self.session.time[frame_idx])
+        frame_number = int(self.session.frames[frame_idx])
 
-    def set_3d_frame(self, frame_idx: int) -> None:
-        self.current_frame_idx = frame_idx
-        self.update_3d_view()
+        self.time_label.setText(
+            f"Time: {self.current_time_s:.3f} s | "
+            f"Sample: {sample_time_s:.3f} s | "
+            f"Frame: {frame_number}"
+        )
+
+    def set_3d_time_from_slider(self, slider_time_ms: int) -> None:
+        time_s = slider_time_ms / 1000.0
+
+        self.set_3d_time(time_s, update_slider=False)
+
+        if self.playback_timer.isActive():
+            self.playback_start_wall_time_s = time.perf_counter()
+            self.playback_start_data_time_s = self.current_time_s
 
     def play_3d(self) -> None:
         if self.session is None:
             self.status_label.setText("Load a CSV before playback")
             return
         
-        self.playback_timer.start(33)
+        self.playback_speed = self.playback_speed_spinbox.value()
+        self.playback_start_wall_time_s = time.perf_counter()
+        self.playback_start_data_time_s = self.current_time_s
+
+        render_fps = int(self.render_fps_combobox.currentText())
+        timer_interval_ms = int(round(1000.0 / render_fps))
+
+        self.playback_timer.start(timer_interval_ms)
 
     def pause_3d(self) -> None:
         self.playback_timer.stop()
 
-    def advance_3d_frame(self) -> None:
+    def set_playback_speed(self, speed: float) -> None:
+        self.playback_speed = speed
+
+        if self.playback_timer.isActive():
+            self.playback_start_wall_time_s = time.perf_counter()
+            self.playback_start_data_time_s = self.current_time_s
+
+    def set_render_fps_cap(self, fps_text: str) -> None:
+        if not self.playback_timer.isActive():
+            return
+
+        render_fps = int(fps_text)
+        timer_interval_ms = int(round(1000.0 / render_fps))
+
+        self.playback_start_wall_time_s = time.perf_counter()
+        self.playback_start_data_time_s = self.current_time_s
+
+        self.playback_timer.start(timer_interval_ms)
+
+    def advance_3d_time(self) -> None:
         if self.session is None:
             return
-        
-        next_frame = self.current_frame_idx + 1
 
-        if next_frame >= len(self.session.frames):
-            next_frame = 0
+        duration_s = float(self.session.time[-1])
 
-        self.frame_slider.setValue(next_frame)
+        if duration_s <= 0.0:
+            return
+
+        elapsed_wall_time_s = time.perf_counter() - self.playback_start_wall_time_s
+        target_time_s = self.playback_start_data_time_s + elapsed_wall_time_s * self.playback_speed
+
+        if target_time_s > duration_s:
+            target_time_s = target_time_s % duration_s
+            self.playback_start_wall_time_s = time.perf_counter()
+            self.playback_start_data_time_s = target_time_s
+
+        self.set_3d_time(target_time_s, update_slider=True)
+
+    def frame_idx_from_time(self, time_s: float) -> int:
+        if self.session is None:
+            return 0
+
+        times = self.session.time
+
+        right_idx = int(np.searchsorted(times, time_s, side="left"))
+
+        if right_idx <= 0:
+            return 0
+
+        if right_idx >= len(times):
+            return len(times) - 1
+
+        left_idx = right_idx - 1
+
+        left_error = abs(time_s - times[left_idx])
+        right_error = abs(times[right_idx] - time_s)
+
+        if left_error <= right_error:
+            return left_idx
+        return right_idx
+
+    def set_3d_time(self, time_s: float, update_slider: bool = True) -> None:
+        if self.session is None:
+            return
+
+        duration_s = float(self.session.time[-1])
+
+        if duration_s <= 0.0:
+            self.current_time_s = 0.0
+            self.current_frame_idx = 0
+            return
+
+        self.current_time_s = max(0.0, min(time_s, duration_s))
+        self.current_frame_idx = self.frame_idx_from_time(self.current_time_s)
+
+        if update_slider:
+            slider_time_ms = int(round(self.current_time_s * 1000.0))
+
+            self.time_slider.blockSignals(True)
+            self.time_slider.setValue(slider_time_ms)
+            self.time_slider.blockSignals(False)
+
+        self.update_3d_view()
 
 def main() -> None:
     app = QApplication(sys.argv)
