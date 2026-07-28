@@ -1,10 +1,12 @@
 #%%
 
+from __future__ import annotations
+
 import sys
 
-from motive_io import load_motive_rigid_body_csv, TrackingSession
+from dependency_check import ensure_dependencies_or_exit
 
-from signal_processing import smooth_values
+ensure_dependencies_or_exit()
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import(
@@ -20,7 +22,6 @@ from PySide6.QtWidgets import(
     QPushButton,
     QScrollArea,
     QSlider,
-    QSpinBox,
     QTabWidget,
     QVBoxLayout,
     QWidget
@@ -29,32 +30,36 @@ from PySide6.QtWidgets import(
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
-from rigid_body_gl import create_body_vertices, make_body_mesh_item, transform_body_vertices
-from rigid_body_math import motive_positions_to_display
-
 import numpy as np
 
 from typing import TypedDict
 
 import time
 
+from motive_io import load_motive_rigid_body_csv, TrackingSession
 
-POSITION_SIGNALS = {
-    "Position X": "position_x",
-    "Position Y": "position_y",
-    "Position Z": "position_z"
+from signal_processing import smooth_tracking_positions_and_rotations
+
+from rigid_body_gl import create_body_vertices, make_body_mesh_item, transform_body_vertices
+from rigid_body_math import motive_positions_to_display
+
+
+POSITION_SIGNAL_INDICES = {
+    "Position X": 0,
+    "Position Y": 1,
+    "Position Z": 2
 }
 
-ROTATION_SIGNALS = {
-    "Rotation X": "rotation_x",
-    "Rotation Y": "rotation_y",
-    "Rotation Z": "rotation_z",
-    "Rotation W": "rotation_w",
+ROTATION_SIGNAL_INDICES = {
+    "Rotation X": 0,
+    "Rotation Y": 1,
+    "Rotation Z": 2,
+    "Rotation W": 3,
 }
 
 SIGNALS = {
-    **POSITION_SIGNALS,
-    **ROTATION_SIGNALS
+    **POSITION_SIGNAL_INDICES,
+    **ROTATION_SIGNAL_INDICES
     }
 
 PLOT_COLORS = [
@@ -97,6 +102,11 @@ class PositionPlotterWindow(QMainWindow):
         self.signal_checkboxes: dict[str, QCheckBox] = {}
 
         self.display_positions: dict[str, np.ndarray] = {}
+        self.display_rotations: dict[str, np.ndarray] = {}
+
+        self.smoothed_display_positions: dict[str, np.ndarray] = {}
+        self.smoothed_display_rotations: dict[str, np.ndarray] = {}
+
         self.current_time_s = 0.0
         self.current_frame_idx = 0
         self.mesh_items: list[gl.GLMeshItem] = []
@@ -192,16 +202,24 @@ class PositionPlotterWindow(QMainWindow):
         smoothing_layout = QVBoxLayout()
 
         self.smoothing_checkbox = QCheckBox("Apply smoothing")
+        self.smoothing_checkbox.stateChanged.connect(
+            self.handle_smoothing_settings_changed
+        )
         smoothing_layout.addWidget(self.smoothing_checkbox)
 
-        self.smoothing_window_spinbox = QSpinBox()
-        self.smoothing_window_spinbox.setMinimum(1)
-        self.smoothing_window_spinbox.setMaximum(501)
-        self.smoothing_window_spinbox.setSingleStep(2)
-        self.smoothing_window_spinbox.setPrefix("Window: ")
-        self.smoothing_window_spinbox.setSuffix(" frames")
+        self.smoothing_seconds_spinbox = QDoubleSpinBox()
+        self.smoothing_seconds_spinbox.setMinimum(0.00)
+        self.smoothing_seconds_spinbox.setMaximum(5.00)
+        self.smoothing_seconds_spinbox.setSingleStep(0.05)
+        self.smoothing_seconds_spinbox.setDecimals(2)
+        self.smoothing_seconds_spinbox.setValue(0.25)
+        self.smoothing_seconds_spinbox.setPrefix("Window: ")
+        self.smoothing_seconds_spinbox.setSuffix(" s")
+        self.smoothing_seconds_spinbox.valueChanged.connect(
+            self.handle_smoothing_settings_changed
+        )
 
-        smoothing_layout.addWidget(self.smoothing_window_spinbox)
+        smoothing_layout.addWidget(self.smoothing_seconds_spinbox)
 
         smoothing_group.setLayout(smoothing_layout)
         controls_layout.addWidget(smoothing_group)
@@ -319,6 +337,7 @@ class PositionPlotterWindow(QMainWindow):
     }
 
         self.display_positions.clear()
+        self.display_rotations.clear()
 
         for body_name, body in self.session.bodies.items():
             self.display_positions[body_name] = motive_positions_to_display(
@@ -326,6 +345,17 @@ class PositionPlotterWindow(QMainWindow):
                 body.position_y,
                 body.position_z
             )
+
+            self.display_rotations[body_name] = np.column_stack(
+                [
+                    body.rotation_x,
+                    body.rotation_y,
+                    body.rotation_z,
+                    body.rotation_w
+                ]
+            )
+
+        self.update_smoothed_tracking_data()
 
         duration_ms = int(round(self.session.time[-1] * 1000.0))
 
@@ -385,26 +415,20 @@ class PositionPlotterWindow(QMainWindow):
 
         time = self.session.time
 
-        apply_smoothing = self.smoothing_checkbox.isChecked()
-        smoothing_window = self.smoothing_window_spinbox.value()
-
         pos_curve_idx = 0
         rot_curve_idx = 0
 
         for body_name in selected_bodies:
-            body = self.session.bodies[body_name]
+            positions = self.get_active_positions(body_name)
+            rotations = self.get_active_rotations(body_name)
 
             for signal_label in selected_signals:
-                attribute_name = SIGNALS[signal_label]
-                values = getattr(body, attribute_name)
-
-                if apply_smoothing:
-                    values = smooth_values(values, smoothing_window)
-
                 curve_name = f"{body_name} - {signal_label}"
 
-                if signal_label in POSITION_SIGNALS:
-                    
+                if signal_label in POSITION_SIGNAL_INDICES:
+                    signal_index = POSITION_SIGNAL_INDICES[signal_label]
+                    values = positions[:, signal_index]
+
                     curve_color = color_for_curve(pos_curve_idx)
 
                     self.position_plot_widget.plot(
@@ -412,11 +436,14 @@ class PositionPlotterWindow(QMainWindow):
                         values,
                         pen=pg.mkPen(color=curve_color, width=2),
                         name=curve_name
-                )
+                    )
+
                     pos_curve_idx += 1
-                    
-                elif signal_label in ROTATION_SIGNALS:
-                    
+
+                elif signal_label in ROTATION_SIGNAL_INDICES:
+                    signal_index = ROTATION_SIGNAL_INDICES[signal_label]
+                    values = rotations[:, signal_index]
+
                     curve_color = color_for_curve(rot_curve_idx)
 
                     self.rotation_plot_widget.plot(
@@ -424,7 +451,8 @@ class PositionPlotterWindow(QMainWindow):
                         values,
                         pen=pg.mkPen(color=curve_color, width=2),
                         name=curve_name
-                )
+                    )
+
                     rot_curve_idx += 1
 
 
@@ -455,9 +483,11 @@ class PositionPlotterWindow(QMainWindow):
         frame_idx = self.current_frame_idx
 
         for body_name in selected_bodies:
-            body = self.session.bodies[body_name]
+            positions = self.get_active_positions(body_name)
+            rotations = self.get_active_rotations(body_name)
 
-            position_display = self.display_positions[body_name][frame_idx]
+            position_display = positions[frame_idx]
+            rotation_display = rotations[frame_idx]
 
             settings = self.body_display_settings[body_name]
 
@@ -468,15 +498,15 @@ class PositionPlotterWindow(QMainWindow):
                 height=settings["height"]
             )
 
-            body_color = str(settings["color"])
+            body_color = settings["color"]
 
             transformed_vertices = transform_body_vertices(
                 base_vertices=base_vertices,
                 position_transform=position_display,
-                qx=body.rotation_x[frame_idx],
-                qy=body.rotation_y[frame_idx],
-                qz=body.rotation_z[frame_idx],
-                qw=body.rotation_w[frame_idx],
+                qx=rotation_display[0],
+                qy=rotation_display[1],
+                qz=rotation_display[2],
+                qw=rotation_display[3],
             )
 
             mesh_item = make_body_mesh_item(
@@ -606,6 +636,53 @@ class PositionPlotterWindow(QMainWindow):
             self.time_slider.blockSignals(False)
 
         self.update_3d_view()
+
+    def update_smoothed_tracking_data(self) -> None:
+        if self.session is None:
+            return
+
+        smoothing_seconds = self.smoothing_seconds_spinbox.value()
+
+        self.smoothed_display_positions.clear()
+        self.smoothed_display_rotations.clear()
+
+        for body_name in self.display_positions:
+            positions = self.display_positions[body_name]
+            rotations = self.display_rotations[body_name]
+
+            smoothed_positions, smoothed_rotations = (
+                smooth_tracking_positions_and_rotations(
+                    time_s=self.session.time,
+                    positions=positions,
+                    rotations=rotations,
+                    smoothing_seconds=smoothing_seconds
+                )
+            )
+
+            self.smoothed_display_positions[body_name] = smoothed_positions
+            self.smoothed_display_rotations[body_name] = smoothed_rotations
+
+    def handle_smoothing_settings_changed(self) -> None:
+        if self.session is None:
+            return
+
+        self.update_smoothed_tracking_data()
+        self.update_3d_view()
+
+        if self.selected_body_names() and self.selected_signal_labels():
+            self.update_plot()
+
+    def get_active_positions(self, body_name: str) -> np.ndarray:
+        if self.smoothing_checkbox.isChecked():
+            return self.smoothed_display_positions[body_name]
+
+        return self.display_positions[body_name]
+
+    def get_active_rotations(self, body_name: str) -> np.ndarray:
+        if self.smoothing_checkbox.isChecked():
+            return self.smoothed_display_rotations[body_name]
+
+        return self.display_rotations[body_name]
 
 def main() -> None:
     app = QApplication(sys.argv)
