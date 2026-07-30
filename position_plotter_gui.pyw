@@ -9,6 +9,7 @@ from dependency_check import ensure_dependencies_or_exit
 ensure_dependencies_or_exit()
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import(
     QApplication,
     QCheckBox,
@@ -24,7 +25,9 @@ from PySide6.QtWidgets import(
     QSlider,
     QTabWidget,
     QVBoxLayout,
-    QWidget
+    QWidget,
+    QLineEdit,
+    QFormLayout,
 )
 
 import pyqtgraph as pg
@@ -40,7 +43,13 @@ from motive_io import load_motive_rigid_body_csv, TrackingSession
 
 from signal_processing import smooth_tracking_positions_and_rotations
 
-from rigid_body_gl import create_body_vertices, make_body_mesh_item, transform_body_vertices
+from rigid_body_gl import (
+    create_body_vertices,
+    make_body_mesh_item,
+    transform_body_vertices,
+    update_body_mesh_item,
+)
+
 from rigid_body_math import motive_positions_to_display
 
 
@@ -80,8 +89,41 @@ PLOT_COLORS = [
     "#890346"
 ]
 
+DEFAULT_PLAYBACK_MSAA_SAMPLES = 4
+
+PLAYBACK_RESOLUTION_OPTIONS = [
+    "Current widget size",
+    "1280 x 720",
+    "1920 x 1080",
+    "2560 x 1440",
+    "3840 x 2160",
+]
+
+MSAA_OPTIONS = [
+    "Off",
+    "2x",
+    "4x",
+    "8x",
+    "16x",
+]
+
+SSAA_OPTIONS = [
+    "1x",
+    "2x",
+    "3x",
+    "4x",
+]
+
 def color_for_curve(curve_index: int) -> str:
     return PLOT_COLORS[curve_index % len(PLOT_COLORS)]
+
+def configure_default_opengl_format(msaa_samples: int) -> None:
+    surface_format = QSurfaceFormat()
+
+    if msaa_samples > 0:
+        surface_format.setSamples(msaa_samples)
+
+    QSurfaceFormat.setDefaultFormat(surface_format)
 
 class BodyDisplaySettings(TypedDict):
     shape: str
@@ -109,7 +151,8 @@ class PositionPlotterWindow(QMainWindow):
 
         self.current_time_s = 0.0
         self.current_frame_idx = 0
-        self.mesh_items: list[gl.GLMeshItem] = []
+        self.mesh_items_by_body: dict[str, gl.GLMeshItem] = {}
+        self.base_vertices_by_body: dict[str, np.ndarray] = {}
 
         self.playback_speed = 1.0
         self.playback_start_wall_time_s = 0.0
@@ -161,8 +204,16 @@ class PositionPlotterWindow(QMainWindow):
         root = QWidget()
         main_layout = QHBoxLayout(root)
 
-        controls_layout = QVBoxLayout()
-        controls_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        settings_scroll_area = QScrollArea()
+        settings_scroll_area.setWidgetResizable(True)
+        settings_scroll_area.setMinimumWidth(320)
+
+        settings_container = QWidget()
+        settings_layout = QVBoxLayout(settings_container)
+
+        settings_scroll_area.setWidget(settings_container)
+
+        settings_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         load_button = QPushButton("Load Motive CSV")
         load_button.clicked.connect(self.load_csv)
@@ -170,11 +221,11 @@ class PositionPlotterWindow(QMainWindow):
         plot_button = QPushButton("Update Plot")
         plot_button.clicked.connect(self.update_plot)
 
-        controls_layout.addWidget(load_button)
-        controls_layout.addWidget(plot_button)
+        settings_layout.addWidget(load_button)
+        settings_layout.addWidget(plot_button)
 
         self.status_label = QLabel("No CSV loaded.")
-        controls_layout.addWidget(self.status_label)
+        settings_layout.addWidget(self.status_label)
 
         self.body_group = QGroupBox("Rigid bodies")
         self.body_layout = QVBoxLayout()
@@ -184,7 +235,7 @@ class PositionPlotterWindow(QMainWindow):
         body_scroll.setWidgetResizable(True)
         body_scroll.setWidget(self.body_group)
 
-        controls_layout.addWidget(body_scroll)
+        settings_layout.addWidget(body_scroll)
 
         signal_group = QGroupBox("Signals")
         signal_layout = QVBoxLayout()
@@ -196,7 +247,7 @@ class PositionPlotterWindow(QMainWindow):
             signal_layout.addWidget(checkbox)
 
         signal_group.setLayout(signal_layout)
-        controls_layout.addWidget(signal_group)
+        settings_layout.addWidget(signal_group)
 
         smoothing_group = QGroupBox("Smoothing")
         smoothing_layout = QVBoxLayout()
@@ -222,7 +273,7 @@ class PositionPlotterWindow(QMainWindow):
         smoothing_layout.addWidget(self.smoothing_seconds_spinbox)
 
         smoothing_group.setLayout(smoothing_layout)
-        controls_layout.addWidget(smoothing_group)
+        settings_layout.addWidget(smoothing_group)
 
         playback_group = QGroupBox("3D Playback")
         playback_layout = QVBoxLayout()
@@ -265,16 +316,48 @@ class PositionPlotterWindow(QMainWindow):
         playback_layout.addWidget(self.playback_speed_spinbox)
         playback_layout.addWidget(QLabel("Render FPS cap"))
         playback_layout.addWidget(self.render_fps_combobox)
+
+        playback_layout.addWidget(QLabel("Playback resolution"))
+
+        self.playback_resolution_combobox = QComboBox()
+        self.playback_resolution_combobox.addItems(PLAYBACK_RESOLUTION_OPTIONS)
+        self.playback_resolution_combobox.setCurrentText("Current widget size")
+        self.playback_resolution_combobox.currentTextChanged.connect(
+            self.handle_playback_render_settings_changed
+        )
+        playback_layout.addWidget(self.playback_resolution_combobox)
+
+        playback_layout.addWidget(QLabel("Playback MSAA"))
+
+        self.playback_msaa_combobox = QComboBox()
+        self.playback_msaa_combobox.addItems(MSAA_OPTIONS)
+        self.playback_msaa_combobox.setCurrentText("4x")
+        self.playback_msaa_combobox.currentTextChanged.connect(
+            self.handle_playback_render_settings_changed
+        )
+        playback_layout.addWidget(self.playback_msaa_combobox)
+
+        playback_layout.addWidget(QLabel("Playback SSAA"))
+
+        self.playback_ssaa_combobox = QComboBox()
+        self.playback_ssaa_combobox.addItems(SSAA_OPTIONS)
+        self.playback_ssaa_combobox.setCurrentText("1x")
+        self.playback_ssaa_combobox.currentTextChanged.connect(
+            self.handle_playback_render_settings_changed
+        )
+        playback_layout.addWidget(self.playback_ssaa_combobox)
+
         playback_layout.addLayout(playback_button_layout)
 
         playback_group.setLayout(playback_layout)
-        controls_layout.addWidget(playback_group)
+        settings_layout.addWidget(playback_group)
 
-        controls_panel = QWidget()
-        controls_panel.setLayout(controls_layout)
-        controls_panel.setFixedWidth(320)
+        export_group = self.create_export_settings_group()
+        settings_layout.addWidget(export_group)
 
-        main_layout.addWidget(controls_panel)
+        settings_layout.addStretch()
+
+        main_layout.addWidget(settings_scroll_area)
         main_layout.addWidget(self.plot_tabs, stretch=1)
         self.setCentralWidget(root)
 
@@ -301,6 +384,7 @@ class PositionPlotterWindow(QMainWindow):
         for body_name in self.session.bodies:
             checkbox = QCheckBox(body_name)
             checkbox.setChecked(True)
+            checkbox.stateChanged.connect(self.handle_body_selection_changed)
 
             self.body_checkboxes[body_name] = checkbox
             self.body_layout.addWidget(checkbox)
@@ -335,6 +419,9 @@ class PositionPlotterWindow(QMainWindow):
                 "height": 0.025,
                 "color": color_for_curve(body_index),
     }
+
+        self.clear_3d_meshes()
+        self.rebuild_body_geometry_cache()
 
         self.display_positions.clear()
         self.display_rotations.clear()
@@ -463,60 +550,54 @@ class PositionPlotterWindow(QMainWindow):
         self.update_3d_view()
 
     def clear_3d_meshes(self) -> None:
-        for mesh_item in self.mesh_items:
+        for mesh_item in self.mesh_items_by_body.values():
             self.view_3d_widget.removeItem(mesh_item)
-            
-        self.mesh_items.clear()
+
+        self.mesh_items_by_body.clear()
+        self.base_vertices_by_body.clear()
+
+    def handle_body_selection_changed(self) -> None:
+        self.update_3d_view()
+
+        if self.session is not None and self.selected_signal_labels():
+            self.update_plot()
+
+    def rebuild_body_geometry_cache(self) -> None:
+        self.base_vertices_by_body.clear()
+
+        for body_name, settings in self.body_display_settings.items():
+            self.base_vertices_by_body[body_name] = create_body_vertices(
+                shape=settings["shape"],
+                length=settings["length"],
+                width=settings["width"],
+                height=settings["height"],
+            )
 
     def update_3d_view(self) -> None:
         if self.session is None:
             return
-        
+
         selected_bodies = self.selected_body_names()
+        selected_body_set = set(selected_bodies)
+
+        for body_name in list(self.mesh_items_by_body.keys()):
+            if body_name not in selected_body_set:
+                mesh_item = self.mesh_items_by_body.pop(body_name)
+                self.view_3d_widget.removeItem(mesh_item)
 
         if not selected_bodies:
-            self.clear_3d_meshes()
+            self.time_label.setText(
+                f"Time: {self.current_time_s:.3f} s | Frame: --"
+            )
             return
-        
-        self.clear_3d_meshes()
 
         frame_idx = self.current_frame_idx
 
         for body_name in selected_bodies:
-            positions = self.get_active_positions(body_name)
-            rotations = self.get_active_rotations(body_name)
-
-            position_display = positions[frame_idx]
-            rotation_display = rotations[frame_idx]
-
-            settings = self.body_display_settings[body_name]
-
-            base_vertices = create_body_vertices(
-                shape=settings["shape"],
-                length=settings["length"],
-                width=settings["width"],
-                height=settings["height"]
+            self.update_body_mesh_for_frame(
+                body_name=body_name,
+                frame_idx=frame_idx,
             )
-
-            body_color = settings["color"]
-
-            transformed_vertices = transform_body_vertices(
-                base_vertices=base_vertices,
-                position_transform=position_display,
-                qx=rotation_display[0],
-                qy=rotation_display[1],
-                qz=rotation_display[2],
-                qw=rotation_display[3],
-            )
-
-            mesh_item = make_body_mesh_item(
-                vertices=transformed_vertices,
-                color=body_color,
-                shape=settings["shape"]
-            )
-
-            self.view_3d_widget.addItem(mesh_item)
-            self.mesh_items.append(mesh_item)
 
         sample_time_s = float(self.session.time[frame_idx])
         frame_number = int(self.session.frames[frame_idx])
@@ -552,6 +633,47 @@ class PositionPlotterWindow(QMainWindow):
 
     def pause_3d(self) -> None:
         self.playback_timer.stop()
+
+    def update_body_mesh_for_frame(
+        self,
+        body_name: str,
+        frame_idx: int) -> None:
+        positions = self.get_active_positions(body_name)
+        rotations = self.get_active_rotations(body_name)
+
+        position_display = positions[frame_idx]
+        rotation_display = rotations[frame_idx]
+
+        settings = self.body_display_settings[body_name]
+        base_vertices = self.base_vertices_by_body[body_name]
+
+        transformed_vertices = transform_body_vertices(
+            base_vertices=base_vertices,
+            position_transform=position_display,
+            qx=rotation_display[0],
+            qy=rotation_display[1],
+            qz=rotation_display[2],
+            qw=rotation_display[3],
+        )
+
+        if body_name not in self.mesh_items_by_body:
+            mesh_item = make_body_mesh_item(
+                vertices=transformed_vertices,
+                color=settings["color"],
+                shape=settings["shape"],
+            )
+
+            self.view_3d_widget.addItem(mesh_item)
+            self.mesh_items_by_body[body_name] = mesh_item
+
+        else:
+            mesh_item = self.mesh_items_by_body[body_name]
+
+            update_body_mesh_item(
+                mesh_item=mesh_item,
+                vertices=transformed_vertices,
+                shape=settings["shape"],
+            )
 
     def set_playback_speed(self, speed: float) -> None:
         self.playback_speed = speed
@@ -684,7 +806,58 @@ class PositionPlotterWindow(QMainWindow):
 
         return self.display_rotations[body_name]
 
+    def create_export_settings_group(self) -> QGroupBox:
+        export_group = QGroupBox("Video Export")
+        export_layout = QVBoxLayout(export_group)
+
+        export_layout.addWidget(QLabel("Export is not implemented yet."))
+
+        self.export_resolution_combobox = QComboBox()
+        self.export_resolution_combobox.addItems(PLAYBACK_RESOLUTION_OPTIONS)
+        self.export_resolution_combobox.setCurrentText("Current widget size")
+
+        export_layout.addWidget(QLabel("Export resolution"))
+        export_layout.addWidget(self.export_resolution_combobox)
+
+        self.export_fps_combobox = QComboBox()
+        self.export_fps_combobox.addItems(["30", "60", "120"])
+        self.export_fps_combobox.setCurrentText("60")
+
+        export_layout.addWidget(QLabel("Export FPS"))
+        export_layout.addWidget(self.export_fps_combobox)
+
+        self.export_msaa_combobox = QComboBox()
+        self.export_msaa_combobox.addItems(MSAA_OPTIONS)
+        self.export_msaa_combobox.setCurrentText("4x")
+
+        export_layout.addWidget(QLabel("Export MSAA"))
+        export_layout.addWidget(self.export_msaa_combobox)
+
+        self.export_ssaa_combobox = QComboBox()
+        self.export_ssaa_combobox.addItems(SSAA_OPTIONS)
+        self.export_ssaa_combobox.setCurrentText("2x")
+
+        export_layout.addWidget(QLabel("Export SSAA"))
+        export_layout.addWidget(self.export_ssaa_combobox)
+
+        self.export_button = QPushButton("Export Video")
+        self.export_button.setEnabled(False)
+        export_layout.addWidget(self.export_button)
+
+        export_group.setEnabled(False)
+
+        return export_group
+
+    def handle_playback_render_settings_changed(self) -> None:
+        self.status_label.setText(
+            "Playback render settings not implemented. "
+            "MSAA is applied when the OpenGL context is created. "
+            "SSAA and fixed playback resolution require the later offscreen renderer."
+        )
+
 def main() -> None:
+    configure_default_opengl_format(DEFAULT_PLAYBACK_MSAA_SAMPLES)
+
     app = QApplication(sys.argv)
 
     window = PositionPlotterWindow()
