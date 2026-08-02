@@ -14,6 +14,7 @@ ensure_dependencies_or_exit()
 import numpy as np
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from pyqtgraph import AxisItem, PlotItem, ViewBox
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QSurfaceFormat
@@ -37,7 +38,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from motive_io import TrackingSession, load_motive_rigid_body_csv
+from motive_io import (
+    RigidBodyData,
+    TrackingSession,
+    load_motive_rigid_body_csv
+)
 from rigid_body_gl import (
     create_body_vertices,
     make_body_mesh_item,
@@ -172,16 +177,36 @@ class SignalPlotTab(QWidget):
         self.updating_signal_tree = False
 
         self.plot_widget = pg.PlotWidget()
-        self.plot_item = self.plot_widget.getPlotItem()
+
+        plot_item = self.plot_widget.getPlotItem()
+
+        if plot_item is None:
+            raise RuntimeError(
+                "The PlotWidget did not create a PlotItem."
+            )
+
+        self.plot_item: PlotItem = plot_item
 
         self.viewboxes_by_data_type: dict[
             str,
-            pg.ViewBox
+            ViewBox
         ] = {}
 
         self.axes_by_data_type: dict[
             str,
-            pg.AxisItem
+            AxisItem
+        ] = {}
+
+        self.legend = self.plot_item.addLegend()
+
+        self.viewboxes_by_data_type: dict[
+            str,
+            ViewBox
+        ] = {}
+
+        self.axes_by_data_type: dict[
+            str,
+            AxisItem
         ] = {}
 
         self.legend = None
@@ -203,13 +228,11 @@ class SignalPlotTab(QWidget):
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True)
 
-        self.plot_widget.setLabel(
+        self.plot_item.setLabel(
             "bottom",
             "Time",
             units="s"
         )
-
-        self.legend = self.plot_item.addLegend()
 
         self._create_plot_axes()
 
@@ -261,7 +284,25 @@ class SignalPlotTab(QWidget):
     def _create_plot_axes(self) -> None:
         position_viewbox = self.plot_item.getViewBox()
 
+        if position_viewbox is None:
+            raise RuntimeError(
+                "The PlotItem does not contain a primary ViewBox."
+            )
+
+        plot_scene = self.plot_widget.scene()
+
+        if plot_scene is None:
+            raise RuntimeError(
+                "The PlotItem is not attached to a graphics scene."
+            )
+
         position_axis = self.plot_item.getAxis("left")
+
+        if position_axis is None:
+            raise RuntimeError(
+                "The PlotItem does not contain a left axis."
+            )
+
         position_axis.setLabel(
             "Position",
             units="m"
@@ -271,21 +312,25 @@ class SignalPlotTab(QWidget):
         self.plot_item.showAxis("right")
 
         euler_axis = self.plot_item.getAxis("right")
+
+        if euler_axis is None:
+            raise RuntimeError(
+                "The PlotItem does not contain a right axis."
+            )
+
         euler_axis.setLabel(
             "Euler angle",
             units="deg"
         )
 
-        euler_viewbox = pg.ViewBox()
+        euler_viewbox = ViewBox()
 
-        self.plot_item.scene().addItem(
-            euler_viewbox
-        )
+        plot_scene.addItem(euler_viewbox)
 
         euler_axis.linkToView(euler_viewbox)
         euler_viewbox.setXLink(position_viewbox)
 
-        quaternion_axis = pg.AxisItem(
+        quaternion_axis = AxisItem(
             orientation="right"
         )
 
@@ -299,11 +344,9 @@ class SignalPlotTab(QWidget):
             3
         )
 
-        quaternion_viewbox = pg.ViewBox()
+        quaternion_viewbox = ViewBox()
 
-        self.plot_item.scene().addItem(
-            quaternion_viewbox
-        )
+        plot_scene.addItem(quaternion_viewbox)
 
         quaternion_axis.linkToView(
             quaternion_viewbox
@@ -330,6 +373,30 @@ class SignalPlotTab(QWidget):
         )
 
         self.update_linked_viewboxes()
+
+    def update_linked_viewboxes(self) -> None:
+        position_viewbox = (
+            self.viewboxes_by_data_type["position"]
+        )
+
+        plot_geometry = (
+            position_viewbox.sceneBoundingRect()
+        )
+
+        for data_type in [
+            "euler",
+            "quaternion"
+        ]:
+            viewbox = (
+                self.viewboxes_by_data_type[data_type]
+            )
+
+            viewbox.setGeometry(plot_geometry)
+
+            viewbox.linkedViewChanged(
+                position_viewbox,
+                ViewBox.XAxis
+            )
 
     def set_session(
         self,
@@ -439,11 +506,12 @@ class SignalPlotTab(QWidget):
                         1,
                         self.signal_tree.topLevelItemCount()):
 
-                    body_item = (
-                        self.signal_tree.topLevelItem(
-                            body_index
-                        )
+                    body_item = self.signal_tree.topLevelItem(
+                        body_index
                     )
+
+                    if body_item is None:
+                        continue
 
                     for signal_index in range(
                             body_item.childCount()):
@@ -507,6 +575,9 @@ class SignalPlotTab(QWidget):
                     signal_index
                 )
 
+                if signal_item is None:
+                    continue
+
                 signal_data = signal_item.data(
                     0,
                     Qt.ItemDataRole.UserRole
@@ -542,6 +613,9 @@ class SignalPlotTab(QWidget):
         all_bodies_item = (
             self.signal_tree.topLevelItem(0)
         )
+
+        if all_bodies_item is None:
+            return
 
         for signal_index in range(
                 all_bodies_item.childCount()):
@@ -609,6 +683,79 @@ class SignalPlotTab(QWidget):
                 )
 
         self.signal_selections = selections
+
+    def get_signal_values(
+        self,
+        selection: PlotSignalSelection) -> np.ndarray:
+
+        if self.session is None:
+            raise RuntimeError(
+                "A tracking session must be assigned "
+                "before retrieving signal values."
+            )
+
+        if selection.body_name not in self.session.bodies:
+            raise KeyError(
+                f"Rigid body {selection.body_name!r} "
+                "does not exist in the current session."
+            )
+
+        body: RigidBodyData = self.session.bodies[
+            selection.body_name
+        ]
+
+        if selection.signal_label not in SIGNAL_DEFINITIONS:
+            raise KeyError(
+                f"Unknown signal: "
+                f"{selection.signal_label!r}."
+            )
+
+        body = self.session.bodies[
+            selection.body_name
+        ]
+
+        signal_definition = SIGNAL_DEFINITIONS[
+            selection.signal_label
+        ]
+
+        data_type = signal_definition["data_type"]
+        signal_index = signal_definition["index"]
+
+        if data_type == "position":
+            signal_data = np.column_stack(
+                [
+                    body.position_x,
+                    body.position_y,
+                    body.position_z
+                ]
+            )
+
+        elif data_type == "euler":
+            signal_data = np.column_stack(
+                [
+                    body.rotation_xyz_x,
+                    body.rotation_xyz_y,
+                    body.rotation_xyz_z
+                ]
+            )
+
+        elif data_type == "quaternion":
+            signal_data = np.column_stack(
+                [
+                    body.rotation_x,
+                    body.rotation_y,
+                    body.rotation_z,
+                    body.rotation_w
+                ]
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported signal data type: "
+                f"{data_type!r}."
+            )
+
+        return signal_data[:, signal_index]
 
 class PositionPlotterWindow(QMainWindow):
 
