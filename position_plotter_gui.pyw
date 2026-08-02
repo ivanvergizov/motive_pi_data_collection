@@ -1,16 +1,23 @@
-#%%
+# %%
 
 from __future__ import annotations
 
 import sys
+import time
+from dataclasses import dataclass
+from typing import TypedDict
 
 from dependency_check import ensure_dependencies_or_exit
 
 ensure_dependencies_or_exit()
 
+import numpy as np
+import pyqtgraph as pg
+import pyqtgraph.opengl as gl
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QSurfaceFormat
-from PySide6.QtWidgets import(
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
@@ -24,52 +31,81 @@ from PySide6.QtWidgets import(
     QScrollArea,
     QSlider,
     QTabWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
-    QLineEdit,
-    QFormLayout,
 )
 
-import pyqtgraph as pg
-import pyqtgraph.opengl as gl
-
-import numpy as np
-
-from typing import TypedDict
-
-import time
-
-from motive_io import load_motive_rigid_body_csv, TrackingSession
-
-from signal_processing import smooth_tracking_positions_and_rotations
-
+from motive_io import TrackingSession, load_motive_rigid_body_csv
 from rigid_body_gl import (
     create_body_vertices,
     make_body_mesh_item,
     transform_body_vertices,
     update_body_mesh_item,
 )
-
 from rigid_body_math import motive_positions_to_display
+from signal_processing import smooth_tracking_positions_and_rotations
 
 
-POSITION_SIGNAL_INDICES = {
-    "Position X": 0,
-    "Position Y": 1,
-    "Position Z": 2
+class SignalDefinition(TypedDict):
+    data_type: str
+    index: int
+
+@dataclass(frozen=True)
+class PlotSignalSelection:
+    body_name: str
+    signal_label: str
+
+class BodyDisplaySettings(TypedDict):
+    shape: str
+    length: float
+    width: float
+    height: float
+    color: str
+
+SIGNAL_DEFINITIONS: dict[str, SignalDefinition] = {
+    "Position X": {
+        "data_type": "position",
+        "index": 0
+    },
+    "Position Y": {
+        "data_type": "position",
+        "index": 1
+    },
+    "Position Z": {
+        "data_type": "position",
+        "index": 2
+    },
+    "Euler X": {
+        "data_type": "euler",
+        "index": 0
+    },
+    "Euler Y": {
+        "data_type": "euler",
+        "index": 1
+    },
+    "Euler Z": {
+        "data_type": "euler",
+        "index": 2
+    },
+    "Quaternion X": {
+        "data_type": "quaternion",
+        "index": 0
+    },
+    "Quaternion Y": {
+        "data_type": "quaternion",
+        "index": 1
+    },
+    "Quaternion Z": {
+        "data_type": "quaternion",
+        "index": 2
+    },
+    "Quaternion W": {
+        "data_type": "quaternion",
+        "index": 3
+    },
 }
-
-ROTATION_SIGNAL_INDICES = {
-    "Rotation X": 0,
-    "Rotation Y": 1,
-    "Rotation Z": 2,
-    "Rotation W": 3,
-}
-
-SIGNALS = {
-    **POSITION_SIGNAL_INDICES,
-    **ROTATION_SIGNAL_INDICES
-    }
 
 PLOT_COLORS = [
     "#e31212",
@@ -125,12 +161,454 @@ def configure_default_opengl_format(msaa_samples: int) -> None:
 
     QSurfaceFormat.setDefaultFormat(surface_format)
 
-class BodyDisplaySettings(TypedDict):
-    shape: str
-    length: float
-    width: float
-    height: float
-    color: str
+class SignalPlotTab(QWidget):
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.session: TrackingSession | None = None
+        self.signal_selections: list[PlotSignalSelection] = []
+
+        self.updating_signal_tree = False
+
+        self.plot_widget = pg.PlotWidget()
+        self.plot_item = self.plot_widget.getPlotItem()
+
+        self.viewboxes_by_data_type: dict[
+            str,
+            pg.ViewBox
+        ] = {}
+
+        self.axes_by_data_type: dict[
+            str,
+            pg.AxisItem
+        ] = {}
+
+        self.legend = None
+
+        self.signal_tree = QTreeWidget()
+        self.raw_values_checkbox = QCheckBox(
+            "Plot values before interpolation"
+        )
+
+        self.axis_scale_spinboxes: dict[
+            str,
+            QDoubleSpinBox
+        ] = {}
+
+        self._build_layout()
+
+
+    def _build_layout(self) -> None:
+        self.plot_widget.setBackground("w")
+        self.plot_widget.showGrid(x=True, y=True)
+
+        self.plot_widget.setLabel(
+            "bottom",
+            "Time",
+            units="s"
+        )
+
+        self.legend = self.plot_item.addLegend()
+
+        self._create_plot_axes()
+
+        self.signal_tree.setHeaderLabels(
+            ["Rigid body and signal"]
+        )
+        self.signal_tree.setRootIsDecorated(True)
+        self.signal_tree.setAlternatingRowColors(True)
+
+        self.signal_tree.itemChanged.connect(
+            self.handle_signal_tree_changed
+        )
+
+        self.raw_values_checkbox.setChecked(False)
+
+        axis_scale_layout = QHBoxLayout()
+
+        for axis_label, data_type in [
+            ("Position scale", "position"),
+            ("Euler scale", "euler"),
+            ("Quaternion scale", "quaternion")
+        ]:
+            scale_spinbox = QDoubleSpinBox()
+            scale_spinbox.setMinimum(0.10)
+            scale_spinbox.setMaximum(100.00)
+            scale_spinbox.setSingleStep(0.10)
+            scale_spinbox.setDecimals(2)
+            scale_spinbox.setValue(1.00)
+            scale_spinbox.setSuffix("x")
+            scale_spinbox.setKeyboardTracking(False)
+
+            self.axis_scale_spinboxes[data_type] = (
+                scale_spinbox
+            )
+
+            axis_scale_layout.addWidget(
+                QLabel(axis_label)
+            )
+            axis_scale_layout.addWidget(
+                scale_spinbox
+            )
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.signal_tree)
+        layout.addWidget(self.raw_values_checkbox)
+        layout.addLayout(axis_scale_layout)
+        layout.addWidget(self.plot_widget)
+
+    def _create_plot_axes(self) -> None:
+        position_viewbox = self.plot_item.getViewBox()
+
+        position_axis = self.plot_item.getAxis("left")
+        position_axis.setLabel(
+            "Position",
+            units="m"
+        )
+        position_axis.linkToView(position_viewbox)
+
+        self.plot_item.showAxis("right")
+
+        euler_axis = self.plot_item.getAxis("right")
+        euler_axis.setLabel(
+            "Euler angle",
+            units="deg"
+        )
+
+        euler_viewbox = pg.ViewBox()
+
+        self.plot_item.scene().addItem(
+            euler_viewbox
+        )
+
+        euler_axis.linkToView(euler_viewbox)
+        euler_viewbox.setXLink(position_viewbox)
+
+        quaternion_axis = pg.AxisItem(
+            orientation="right"
+        )
+
+        quaternion_axis.setLabel(
+            "Quaternion"
+        )
+
+        self.plot_item.layout.addItem(
+            quaternion_axis,
+            2,
+            3
+        )
+
+        quaternion_viewbox = pg.ViewBox()
+
+        self.plot_item.scene().addItem(
+            quaternion_viewbox
+        )
+
+        quaternion_axis.linkToView(
+            quaternion_viewbox
+        )
+
+        quaternion_viewbox.setXLink(
+            position_viewbox
+        )
+
+        self.viewboxes_by_data_type = {
+            "position": position_viewbox,
+            "euler": euler_viewbox,
+            "quaternion": quaternion_viewbox
+        }
+
+        self.axes_by_data_type = {
+            "position": position_axis,
+            "euler": euler_axis,
+            "quaternion": quaternion_axis
+        }
+
+        position_viewbox.sigResized.connect(
+            self.update_linked_viewboxes
+        )
+
+        self.update_linked_viewboxes()
+
+    def set_session(
+        self,
+        session: TrackingSession) -> None:
+
+        self.session = session
+        self.signal_selections.clear()
+
+        self.populate_signal_tree()
+
+
+    def populate_signal_tree(self) -> None:
+        self.updating_signal_tree = True
+
+        try:
+            self.signal_tree.clear()
+
+            if self.session is None:
+                return
+
+            all_bodies_item = QTreeWidgetItem(
+                ["All rigid bodies"]
+            )
+
+            self.signal_tree.addTopLevelItem(all_bodies_item)
+
+            for signal_label in SIGNAL_DEFINITIONS:
+                signal_item = QTreeWidgetItem([signal_label])
+
+                signal_item.setFlags(
+                    signal_item.flags()
+                    | Qt.ItemFlag.ItemIsUserCheckable
+                )
+
+                signal_item.setCheckState(
+                    0,
+                    Qt.CheckState.Unchecked
+                )
+
+                signal_item.setData(
+                    0,
+                    Qt.ItemDataRole.UserRole,
+                    ("all", signal_label)
+                )
+
+                all_bodies_item.addChild(signal_item)
+
+            for body_name in self.session.bodies:
+                body_item = QTreeWidgetItem([body_name])
+
+                self.signal_tree.addTopLevelItem(body_item)
+
+                for signal_label in SIGNAL_DEFINITIONS:
+                    signal_item = QTreeWidgetItem([signal_label])
+
+                    signal_item.setFlags(
+                        signal_item.flags()
+                        | Qt.ItemFlag.ItemIsUserCheckable
+                    )
+
+                    signal_item.setCheckState(
+                        0,
+                        Qt.CheckState.Unchecked
+                    )
+
+                    signal_item.setData(
+                        0,
+                        Qt.ItemDataRole.UserRole,
+                        (body_name, signal_label)
+                    )
+
+                    body_item.addChild(signal_item)
+
+            all_bodies_item.setExpanded(True)
+
+        finally:
+            self.updating_signal_tree = False
+
+    def handle_signal_tree_changed(
+        self,
+        item: QTreeWidgetItem,
+        column: int) -> None:
+
+        if self.updating_signal_tree:
+            return
+
+        if column != 0:
+            return
+
+        item_data = item.data(
+            0,
+            Qt.ItemDataRole.UserRole
+        )
+
+        if item_data is None:
+            return
+
+        body_name, signal_label = item_data
+
+        self.updating_signal_tree = True
+
+        try:
+            if body_name == "all":
+                target_state = item.checkState(0)
+
+                for body_index in range(
+                        1,
+                        self.signal_tree.topLevelItemCount()):
+
+                    body_item = (
+                        self.signal_tree.topLevelItem(
+                            body_index
+                        )
+                    )
+
+                    for signal_index in range(
+                            body_item.childCount()):
+
+                        signal_item = body_item.child(
+                            signal_index
+                        )
+
+                        signal_data = signal_item.data(
+                            0,
+                            Qt.ItemDataRole.UserRole
+                        )
+
+                        if signal_data is None:
+                            continue
+
+                        _, child_signal_label = signal_data
+
+                        if child_signal_label == signal_label:
+                            signal_item.setCheckState(
+                                0,
+                                target_state
+                            )
+                            break
+
+            else:
+                self.update_all_bodies_signal_state(
+                    signal_label
+                )
+
+        finally:
+            self.updating_signal_tree = False
+
+        self.rebuild_signal_selections()
+
+
+    def update_all_bodies_signal_state(
+        self,
+        signal_label: str) -> None:
+
+        if self.signal_tree.topLevelItemCount() == 0:
+            return
+
+        checked_count = 0
+        body_count = (
+            self.signal_tree.topLevelItemCount() - 1
+        )
+
+        for body_index in range(
+                1,
+                self.signal_tree.topLevelItemCount()):
+
+            body_item = self.signal_tree.topLevelItem(
+                body_index
+            )
+
+            for signal_index in range(
+                    body_item.childCount()):
+
+                signal_item = body_item.child(
+                    signal_index
+                )
+
+                signal_data = signal_item.data(
+                    0,
+                    Qt.ItemDataRole.UserRole
+                )
+
+                if signal_data is None:
+                    continue
+
+                _, child_signal_label = signal_data
+
+                if child_signal_label != signal_label:
+                    continue
+
+                if (
+                    signal_item.checkState(0)
+                    == Qt.CheckState.Checked
+                ):
+                    checked_count += 1
+
+                break
+
+        if checked_count == 0:
+            aggregate_state = Qt.CheckState.Unchecked
+
+        elif checked_count == body_count:
+            aggregate_state = Qt.CheckState.Checked
+
+        else:
+            aggregate_state = (
+                Qt.CheckState.PartiallyChecked
+            )
+
+        all_bodies_item = (
+            self.signal_tree.topLevelItem(0)
+        )
+
+        for signal_index in range(
+                all_bodies_item.childCount()):
+
+            signal_item = all_bodies_item.child(
+                signal_index
+            )
+
+            signal_data = signal_item.data(
+                0,
+                Qt.ItemDataRole.UserRole
+            )
+
+            if signal_data is None:
+                continue
+
+            _, child_signal_label = signal_data
+
+            if child_signal_label == signal_label:
+                signal_item.setCheckState(
+                    0,
+                    aggregate_state
+                )
+                break
+
+    def rebuild_signal_selections(self) -> None:
+        selections: list[PlotSignalSelection] = []
+
+        for body_index in range(
+                1,
+                self.signal_tree.topLevelItemCount()):
+
+            body_item = self.signal_tree.topLevelItem(
+                body_index
+            )
+
+            for signal_index in range(
+                    body_item.childCount()):
+
+                signal_item = body_item.child(
+                    signal_index
+                )
+
+                if (
+                    signal_item.checkState(0)
+                    != Qt.CheckState.Checked
+                ):
+                    continue
+
+                signal_data = signal_item.data(
+                    0,
+                    Qt.ItemDataRole.UserRole
+                )
+
+                if signal_data is None:
+                    continue
+
+                body_name, signal_label = signal_data
+
+                selections.append(
+                    PlotSignalSelection(
+                        body_name=body_name,
+                        signal_label=signal_label
+                    )
+                )
+
+        self.signal_selections = selections
 
 class PositionPlotterWindow(QMainWindow):
 
@@ -418,7 +896,7 @@ class PositionPlotterWindow(QMainWindow):
                 "width": 0.065,
                 "height": 0.025,
                 "color": color_for_curve(body_index),
-    }
+        }
 
         self.clear_3d_meshes()
         self.rebuild_body_geometry_cache()
@@ -546,8 +1024,6 @@ class PositionPlotterWindow(QMainWindow):
         self.status_label.setText(
             f"Plotting {len(selected_bodies)} bodies and {len(selected_signals)} signals"
         )
-
-        self.update_3d_view()
 
     def clear_3d_meshes(self) -> None:
         for mesh_item in self.mesh_items_by_body.values():
