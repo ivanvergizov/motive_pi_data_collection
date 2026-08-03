@@ -199,18 +199,6 @@ class SignalPlotTab(QWidget):
 
         self.legend = self.plot_item.addLegend()
 
-        self.viewboxes_by_data_type: dict[
-            str,
-            ViewBox
-        ] = {}
-
-        self.axes_by_data_type: dict[
-            str,
-            AxisItem
-        ] = {}
-
-        self.legend = None
-
         self.signal_tree = QTreeWidget()
         self.raw_values_checkbox = QCheckBox(
             "Plot values before interpolation"
@@ -520,6 +508,9 @@ class SignalPlotTab(QWidget):
                             signal_index
                         )
 
+                        if signal_item is None:
+                            continue
+
                         signal_data = signal_item.data(
                             0,
                             Qt.ItemDataRole.UserRole
@@ -567,6 +558,9 @@ class SignalPlotTab(QWidget):
             body_item = self.signal_tree.topLevelItem(
                 body_index
             )
+
+            if body_item is None:
+                continue
 
             for signal_index in range(
                     body_item.childCount()):
@@ -624,6 +618,9 @@ class SignalPlotTab(QWidget):
                 signal_index
             )
 
+            if signal_item is None:
+                continue
+
             signal_data = signal_item.data(
                 0,
                 Qt.ItemDataRole.UserRole
@@ -652,12 +649,18 @@ class SignalPlotTab(QWidget):
                 body_index
             )
 
+            if body_item is None:
+                continue
+
             for signal_index in range(
                     body_item.childCount()):
 
                 signal_item = body_item.child(
                     signal_index
                 )
+
+                if signal_item is None:
+                    continue
 
                 if (
                     signal_item.checkState(0)
@@ -688,21 +691,19 @@ class SignalPlotTab(QWidget):
         self,
         selection: PlotSignalSelection) -> np.ndarray:
 
-        if self.session is None:
+        session = self.session
+
+        if session is None:
             raise RuntimeError(
                 "A tracking session must be assigned "
                 "before retrieving signal values."
             )
 
-        if selection.body_name not in self.session.bodies:
+        if selection.body_name not in session.bodies:
             raise KeyError(
                 f"Rigid body {selection.body_name!r} "
                 "does not exist in the current session."
             )
-
-        body: RigidBodyData = self.session.bodies[
-            selection.body_name
-        ]
 
         if selection.signal_label not in SIGNAL_DEFINITIONS:
             raise KeyError(
@@ -710,7 +711,7 @@ class SignalPlotTab(QWidget):
                 f"{selection.signal_label!r}."
             )
 
-        body = self.session.bodies[
+        body: RigidBodyData = session.bodies[
             selection.body_name
         ]
 

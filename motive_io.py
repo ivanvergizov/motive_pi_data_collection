@@ -216,7 +216,7 @@ def load_motive_rigid_body_csv(csv_path: str | Path) -> TrackingSession:
             rotation_xyz_z=rotation_xyz_z,
             position_x=position_x,
             position_y=position_y,
-            position_z=position_z,
+            position_z=position_z
         )
 
         bodies[body_name] = body
