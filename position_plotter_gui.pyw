@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -18,13 +19,21 @@ from OpenGL import GL
 
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
+from pyqtgraph.opengl.GLGraphicsItem import GLGraphicsItem
+from pyqtgraph.opengl.items.GLTextItem import GLTextItem
 from pyqtgraph.graphicsItems.AxisItem import AxisItem
 from pyqtgraph.graphicsItems.PlotItem.PlotItem import PlotItem
 from pyqtgraph.graphicsItems.ViewBox.ViewBox import ViewBox
 from pyqtgraph.graphicsItems.PlotDataItem import PlotDataItem
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QSurfaceFormat
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFont,
+    QSurfaceFormat,
+    QVector3D
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -229,7 +238,12 @@ def create_gl_view_widget(
 
     view_widget = gl.GLViewWidget()
     view_widget.setFormat(surface_format)
-    view_widget.setBackgroundColor("w")
+    view_widget.setBackgroundColor(
+        QColor(255, 255, 255, 255)
+    )
+    view_widget.setStyleSheet(
+        "background-color: white;"
+    )
     view_widget.setCameraPosition(
         distance=2.0,
         elevation=25.0,
@@ -237,6 +251,220 @@ def create_gl_view_widget(
     )
 
     return view_widget
+
+
+
+@dataclass(frozen=True)
+class RoomBounds:
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    z_min: float
+    z_max: float
+    x_tick: float
+    y_tick: float
+    z_tick: float
+
+    def center_vector(self) -> QVector3D:
+        return QVector3D(
+            float((self.x_min + self.x_max) / 2.0),
+            float((self.y_min + self.y_max) / 2.0),
+            float((self.z_min + self.z_max) / 2.0)
+        )
+
+    def spans(self) -> tuple[float, float, float]:
+        return (
+            float(self.x_max - self.x_min),
+            float(self.y_max - self.y_min),
+            float(self.z_max - self.z_min)
+        )
+
+
+def nice_tick_spacing(
+        span: float,
+        target_tick_count: int = 8
+) -> float:
+    safe_span = max(float(span), 1.0e-9)
+    raw_spacing = safe_span / max(target_tick_count, 1)
+    exponent = math.floor(math.log10(raw_spacing))
+    magnitude = 10.0 ** exponent
+    normalized = raw_spacing / magnitude
+
+    if normalized <= 1.0:
+        multiplier = 1.0
+    elif normalized <= 2.0:
+        multiplier = 2.0
+    elif normalized <= 5.0:
+        multiplier = 5.0
+    else:
+        multiplier = 10.0
+
+    return float(multiplier * magnitude)
+
+
+def calculate_room_axis_bounds(
+        values: np.ndarray,
+        minimum_padding: float
+) -> tuple[float, float, float]:
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+
+    if finite_values.size == 0:
+        return -1.0, 1.0, 0.25
+
+    data_minimum = float(np.min(finite_values))
+    data_maximum = float(np.max(finite_values))
+    data_span = data_maximum - data_minimum
+
+    if data_span <= 1.0e-9:
+        half_span = max(
+            abs(data_minimum) * 0.1,
+            minimum_padding,
+            0.25
+        )
+        data_minimum -= half_span
+        data_maximum += half_span
+        data_span = data_maximum - data_minimum
+
+    padding = max(
+        minimum_padding,
+        data_span * 0.08,
+        0.05
+    )
+
+    padded_span = data_span + 2.0 * padding
+    tick_spacing = nice_tick_spacing(padded_span)
+
+    axis_minimum = (
+        math.floor(
+            (data_minimum - padding) / tick_spacing
+        )
+        * tick_spacing
+    )
+
+    axis_maximum = (
+        math.ceil(
+            (data_maximum + padding) / tick_spacing
+        )
+        * tick_spacing
+    )
+
+    if axis_maximum <= axis_minimum:
+        axis_maximum = axis_minimum + tick_spacing
+
+    return (
+        float(axis_minimum),
+        float(axis_maximum),
+        float(tick_spacing)
+    )
+
+
+def calculate_room_bounds(
+        positions_by_body: dict[str, np.ndarray],
+        minimum_padding: float
+) -> RoomBounds:
+    valid_positions: list[np.ndarray] = []
+
+    for positions in positions_by_body.values():
+        position_array = np.asarray(
+            positions,
+            dtype=float
+        )
+
+        if (
+            position_array.ndim == 2
+            and position_array.shape[1] == 3
+            and position_array.size > 0
+        ):
+            valid_positions.append(position_array)
+
+    if not valid_positions:
+        return RoomBounds(
+            x_min=-1.0,
+            x_max=1.0,
+            y_min=-1.0,
+            y_max=1.0,
+            z_min=-1.0,
+            z_max=1.0,
+            x_tick=0.25,
+            y_tick=0.25,
+            z_tick=0.25
+        )
+
+    combined_positions = np.vstack(valid_positions)
+
+    x_min, x_max, x_tick = calculate_room_axis_bounds(
+        combined_positions[:, 0],
+        minimum_padding
+    )
+
+    y_min, y_max, y_tick = calculate_room_axis_bounds(
+        combined_positions[:, 1],
+        minimum_padding
+    )
+
+    z_min, z_max, z_tick = calculate_room_axis_bounds(
+        combined_positions[:, 2],
+        minimum_padding
+    )
+
+    return RoomBounds(
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        z_min=z_min,
+        z_max=z_max,
+        x_tick=x_tick,
+        y_tick=y_tick,
+        z_tick=z_tick
+    )
+
+
+def axis_tick_values(
+        axis_minimum: float,
+        axis_maximum: float,
+        tick_spacing: float
+) -> np.ndarray:
+    tick_count = max(
+        1,
+        int(
+            round(
+                (axis_maximum - axis_minimum)
+                / tick_spacing
+            )
+        )
+    )
+
+    return axis_minimum + (
+        np.arange(tick_count + 1, dtype=float)
+        * tick_spacing
+    )
+
+
+def format_axis_tick(
+        value: float,
+        tick_spacing: float
+) -> str:
+    if abs(value) < tick_spacing * 1.0e-8:
+        value = 0.0
+
+    exponent = math.floor(
+        math.log10(max(abs(tick_spacing), 1.0e-12))
+    )
+
+    decimal_places = max(0, -exponent)
+    return f"{value:.{decimal_places}f}"
+
+
+def create_text_font(
+        point_size: int,
+        bold: bool = False
+) -> QFont:
+    font = QFont("Helvetica", point_size)
+    font.setBold(bold)
+    return font
 
 
 def create_default_3d_grid() -> gl.GLGridItem:
@@ -1953,6 +2181,21 @@ class Recorded3DPlaybackTab(QWidget):
             np.ndarray
         ] = {}
 
+        self.body_label_items_by_body: dict[
+            str,
+            GLTextItem
+        ] = {}
+
+        self.axis_label_items: list[GLTextItem] = []
+
+        self.room_bounds: RoomBounds | None = None
+        self.room_visual_items: list[GLGraphicsItem] = []
+        self.room_visual_warning: str | None = None
+        self.body_label_warning: str | None = None
+        self.axis_tick_font = create_text_font(8)
+        self.axis_title_font = create_text_font(9, bold=True)
+        self.body_label_font = create_text_font(7)
+
         self.current_time_s = 0.0
         self.current_frame_idx = 0
 
@@ -2018,10 +2261,19 @@ class Recorded3DPlaybackTab(QWidget):
 
         self.grid_3d = create_default_3d_grid()
         self.view_3d_widget.addItem(self.grid_3d)
+        self.room_visual_items.append(self.grid_3d)
 
         self.preview_scroll_area = QScrollArea()
         self.preview_scroll_area.setAlignment(
             Qt.AlignmentFlag.AlignCenter
+        )
+        self.preview_scroll_area.setStyleSheet(
+            "QScrollArea { background-color: white; }"
+            "QScrollArea > QWidget > QWidget "
+            "{ background-color: white; }"
+        )
+        self.preview_scroll_area.viewport().setStyleSheet(
+            "background-color: white;"
         )
         self.preview_scroll_area.setWidgetResizable(True)
         self.preview_scroll_area.setWidget(
@@ -2232,7 +2484,11 @@ class Recorded3DPlaybackTab(QWidget):
     ) -> None:
         self.pause_3d()
         self.clear_3d_meshes()
+        self.clear_room_visuals()
         self.clear_body_checkboxes()
+
+        self.room_visual_warning = None
+        self.body_label_warning = None
 
         self.session = session
         self.source_file_path = source_file_path
@@ -2275,6 +2531,10 @@ class Recorded3DPlaybackTab(QWidget):
                     ]
                 )
             )
+
+        self.update_room_from_loaded_data()
+        self.rebuild_room_visuals()
+        self.frame_camera_to_room()
 
         if self.smoothing_checkbox.isChecked():
             self.update_smoothed_tracking_data()
@@ -2324,10 +2584,36 @@ class Recorded3DPlaybackTab(QWidget):
             else "Session supplied externally"
         )
 
+        room_text = ""
+
+        if self.room_bounds is not None:
+            room_text = (
+                "\nRoom bounds: "
+                f"X {self.room_bounds.x_min:g} to "
+                f"{self.room_bounds.x_max:g} m | "
+                f"Y {self.room_bounds.y_min:g} to "
+                f"{self.room_bounds.y_max:g} m | "
+                f"Z {self.room_bounds.z_min:g} to "
+                f"{self.room_bounds.z_max:g} m"
+            )
+
+        if self.room_visual_warning is not None:
+            room_text += (
+                "\nRoom visual warning: "
+                f"{self.room_visual_warning}"
+            )
+
+        if self.body_label_warning is not None:
+            room_text += (
+                "\nBody label warning: "
+                f"{self.body_label_warning}"
+            )
+
         self.status_label.setText(
             f"{source_text}\n"
             f"{len(session.bodies)} rigid bodies | "
             f"{duration_s:.3f} s"
+            f"{room_text}"
         )
 
     def clear_body_checkboxes(self) -> None:
@@ -2480,7 +2766,518 @@ class Recorded3DPlaybackTab(QWidget):
             self.view_3d_widget.removeItem(mesh_item)
 
         self.mesh_items_by_body.clear()
+
+        for label_item in (
+                self.body_label_items_by_body.values()):
+            self.view_3d_widget.removeItem(label_item)
+
+        self.body_label_items_by_body.clear()
         self.base_vertices_by_body.clear()
+
+    def clear_room_visuals(self) -> None:
+        for room_item in self.room_visual_items:
+            self.view_3d_widget.removeItem(room_item)
+
+        self.room_visual_items.clear()
+
+        for label_item in self.axis_label_items:
+            self.view_3d_widget.removeItem(label_item)
+
+        self.axis_label_items.clear()
+
+    def add_room_visual_item(
+        self,
+        room_item: GLGraphicsItem
+    ) -> None:
+        self.view_3d_widget.addItem(room_item)
+        self.room_visual_items.append(room_item)
+
+    def create_gl_text_item(
+        self,
+        position: tuple[float, float, float],
+        text: str,
+        font: QFont,
+        alignment: Qt.AlignmentFlag,
+        warning_kind: Literal["room", "body"]
+    ) -> GLTextItem | None:
+        try:
+            text_item = GLTextItem(
+                pos=np.asarray(
+                    position,
+                    dtype=float
+                ),
+                color=QColor(25, 25, 25, 255),
+                text=text,
+                font=font,
+                alignment=alignment,
+                glOptions="translucent"
+            )
+
+            text_item.setDepthValue(1000)
+            self.view_3d_widget.addItem(text_item)
+            return text_item
+
+        except Exception as exc:
+            warning_text = (
+                f"Unable to create {warning_kind} label "
+                f"{text!r}: {exc}"
+            )
+
+            if warning_kind == "room":
+                self.room_visual_warning = warning_text
+            else:
+                self.body_label_warning = warning_text
+
+            return None
+
+    def add_room_text_item(
+        self,
+        position: tuple[float, float, float],
+        text: str,
+        font: QFont
+    ) -> None:
+        text_item = self.create_gl_text_item(
+            position=position,
+            text=text,
+            font=font,
+            alignment=(
+                Qt.AlignmentFlag.AlignHCenter
+                | Qt.AlignmentFlag.AlignVCenter
+            ),
+            warning_kind="room"
+        )
+
+        if text_item is not None:
+            self.axis_label_items.append(text_item)
+
+    def update_room_from_loaded_data(self) -> None:
+        maximum_body_dimension = 0.10
+
+        for settings in self.body_display_settings.values():
+            maximum_body_dimension = max(
+                maximum_body_dimension,
+                settings["length"],
+                settings["width"],
+                settings["height"]
+            )
+
+        self.room_bounds = calculate_room_bounds(
+            self.display_positions,
+            minimum_padding=maximum_body_dimension
+        )
+
+    def rebuild_room_visuals(self) -> None:
+        self.clear_room_visuals()
+
+        bounds = self.room_bounds
+
+        if bounds is None:
+            self.grid_3d = create_default_3d_grid()
+            self.add_room_visual_item(self.grid_3d)
+            return
+
+        x_span, y_span, z_span = bounds.spans()
+
+        grid_color = (145, 145, 145, 80)
+
+        floor_grid = gl.GLGridItem()
+        floor_grid.setSize(
+            x=x_span,
+            y=y_span
+        )
+        floor_grid.setSpacing(
+            x=bounds.x_tick,
+            y=bounds.y_tick
+        )
+        floor_grid.setColor(grid_color)
+        floor_grid.translate(
+            float((bounds.x_min + bounds.x_max) / 2.0),
+            float((bounds.y_min + bounds.y_max) / 2.0),
+            float(bounds.z_min)
+        )
+
+        self.grid_3d = floor_grid
+        self.add_room_visual_item(floor_grid)
+
+        xz_grid = gl.GLGridItem()
+        xz_grid.setSize(
+            x=x_span,
+            y=z_span
+        )
+        xz_grid.setSpacing(
+            x=bounds.x_tick,
+            y=bounds.z_tick
+        )
+        xz_grid.setColor(grid_color)
+        xz_grid.rotate(
+            90.0,
+            1.0,
+            0.0,
+            0.0
+        )
+        xz_grid.translate(
+            float((bounds.x_min + bounds.x_max) / 2.0),
+            float(bounds.y_min),
+            float((bounds.z_min + bounds.z_max) / 2.0)
+        )
+        self.add_room_visual_item(xz_grid)
+
+        yz_grid = gl.GLGridItem()
+        yz_grid.setSize(
+            x=z_span,
+            y=y_span
+        )
+        yz_grid.setSpacing(
+            x=bounds.z_tick,
+            y=bounds.y_tick
+        )
+        yz_grid.setColor(grid_color)
+        yz_grid.rotate(
+            90.0,
+            0.0,
+            1.0,
+            0.0
+        )
+        yz_grid.translate(
+            float(bounds.x_min),
+            float((bounds.y_min + bounds.y_max) / 2.0),
+            float((bounds.z_min + bounds.z_max) / 2.0)
+        )
+        self.add_room_visual_item(yz_grid)
+
+        axis_color = (0.22, 0.22, 0.22, 1.0)
+
+        x_axis_y = bounds.y_min
+        x_axis_z = bounds.z_min
+        y_axis_x = bounds.x_min
+        y_axis_z = bounds.z_min
+        z_axis_x = bounds.x_min
+        z_axis_y = bounds.y_min
+
+        axis_segments = (
+            np.asarray(
+                [
+                    [bounds.x_min, x_axis_y, x_axis_z],
+                    [bounds.x_max, x_axis_y, x_axis_z]
+                ],
+                dtype=np.float32
+            ),
+            np.asarray(
+                [
+                    [y_axis_x, bounds.y_min, y_axis_z],
+                    [y_axis_x, bounds.y_max, y_axis_z]
+                ],
+                dtype=np.float32
+            ),
+            np.asarray(
+                [
+                    [z_axis_x, z_axis_y, bounds.z_min],
+                    [z_axis_x, z_axis_y, bounds.z_max]
+                ],
+                dtype=np.float32
+            )
+        )
+
+        for axis_segment in axis_segments:
+            axis_item = gl.GLLinePlotItem(
+                pos=axis_segment,
+                color=axis_color,
+                width=3.0,
+                antialias=True,
+                mode="line_strip"
+            )
+            axis_item.setGLOptions(
+                {
+                    "glDisable": [GL.GL_DEPTH_TEST],
+                    "glEnable": [GL.GL_BLEND],
+                    "glBlendFunc": (
+                        GL.GL_SRC_ALPHA,
+                        GL.GL_ONE_MINUS_SRC_ALPHA
+                    )
+                }
+            )
+            axis_item.setDepthValue(100)
+            self.add_room_visual_item(axis_item)
+
+        x_ticks = axis_tick_values(
+            bounds.x_min,
+            bounds.x_max,
+            bounds.x_tick
+        )
+        y_ticks = axis_tick_values(
+            bounds.y_min,
+            bounds.y_max,
+            bounds.y_tick
+        )
+        z_ticks = axis_tick_values(
+            bounds.z_min,
+            bounds.z_max,
+            bounds.z_tick
+        )
+
+        x_tick_length = max(
+            y_span * 0.015,
+            bounds.y_tick * 0.15
+        )
+        y_tick_length = max(
+            x_span * 0.015,
+            bounds.x_tick * 0.15
+        )
+        z_tick_length = max(
+            x_span * 0.015,
+            bounds.x_tick * 0.15
+        )
+
+        tick_segments: list[list[float]] = []
+
+        for tick_value in x_ticks:
+            tick_segments.extend(
+                [
+                    [tick_value, x_axis_y, x_axis_z],
+                    [
+                        tick_value,
+                        x_axis_y + x_tick_length,
+                        x_axis_z
+                    ]
+                ]
+            )
+
+        for tick_value in y_ticks:
+            tick_segments.extend(
+                [
+                    [y_axis_x, tick_value, y_axis_z],
+                    [
+                        y_axis_x + y_tick_length,
+                        tick_value,
+                        y_axis_z
+                    ]
+                ]
+            )
+
+        for tick_value in z_ticks:
+            tick_segments.extend(
+                [
+                    [z_axis_x, z_axis_y, tick_value],
+                    [
+                        z_axis_x + z_tick_length,
+                        z_axis_y,
+                        tick_value
+                    ]
+                ]
+            )
+
+        if tick_segments:
+            tick_item = gl.GLLinePlotItem(
+                pos=np.asarray(
+                    tick_segments,
+                    dtype=np.float32
+                ),
+                color=axis_color,
+                width=2.0,
+                antialias=True,
+                mode="lines"
+            )
+            tick_item.setGLOptions(
+                {
+                    "glDisable": [GL.GL_DEPTH_TEST],
+                    "glEnable": [GL.GL_BLEND],
+                    "glBlendFunc": (
+                        GL.GL_SRC_ALPHA,
+                        GL.GL_ONE_MINUS_SRC_ALPHA
+                    )
+                }
+            )
+            tick_item.setDepthValue(101)
+            self.add_room_visual_item(tick_item)
+
+        x_text_offset = max(
+            y_span * 0.025,
+            bounds.y_tick * 0.25
+        )
+        y_text_offset = max(
+            x_span * 0.025,
+            bounds.x_tick * 0.25
+        )
+        z_text_offset = max(
+            x_span * 0.025,
+            bounds.x_tick * 0.25
+        )
+
+        for tick_value in x_ticks:
+            self.add_room_text_item(
+                position=(
+                    float(tick_value),
+                    float(x_axis_y - x_text_offset),
+                    float(x_axis_z)
+                ),
+                text=format_axis_tick(
+                    float(tick_value),
+                    bounds.x_tick
+                ),
+                font=self.axis_tick_font
+            )
+
+        for tick_value in y_ticks:
+            self.add_room_text_item(
+                position=(
+                    float(y_axis_x - y_text_offset),
+                    float(tick_value),
+                    float(y_axis_z)
+                ),
+                text=format_axis_tick(
+                    float(tick_value),
+                    bounds.y_tick
+                ),
+                font=self.axis_tick_font
+            )
+
+        for tick_value in z_ticks:
+            self.add_room_text_item(
+                position=(
+                    float(z_axis_x - z_text_offset),
+                    float(z_axis_y),
+                    float(tick_value)
+                ),
+                text=format_axis_tick(
+                    float(tick_value),
+                    bounds.z_tick
+                ),
+                font=self.axis_tick_font
+            )
+
+        axis_titles = (
+            (
+                (
+                    float(bounds.x_max + bounds.x_tick * 0.4),
+                    float(x_axis_y),
+                    float(x_axis_z)
+                ),
+                "X (m)"
+            ),
+            (
+                (
+                    float(y_axis_x),
+                    float(bounds.y_max + bounds.y_tick * 0.4),
+                    float(y_axis_z)
+                ),
+                "Y (m)"
+            ),
+            (
+                (
+                    float(z_axis_x),
+                    float(z_axis_y),
+                    float(bounds.z_max + bounds.z_tick * 0.4)
+                ),
+                "Z (m)"
+            )
+        )
+
+        for title_position, title_text in axis_titles:
+            self.add_room_text_item(
+                position=title_position,
+                text=title_text,
+                font=self.axis_title_font
+            )
+
+    def frame_camera_to_room(self) -> None:
+        bounds = self.room_bounds
+
+        if bounds is None:
+            return
+
+        x_span, y_span, z_span = bounds.spans()
+        diagonal = math.sqrt(
+            x_span * x_span
+            + y_span * y_span
+            + z_span * z_span
+        )
+
+        self.view_3d_widget.setCameraPosition(
+            pos=bounds.center_vector(),
+            distance=max(diagonal * 1.35, 1.0),
+            elevation=25.0,
+            azimuth=45.0
+        )
+
+    def update_body_label_entry(
+        self,
+        body_name: str,
+        position_display: np.ndarray
+    ) -> None:
+        label_position = np.asarray(
+            position_display,
+            dtype=float
+        ).copy()
+
+        settings = self.body_display_settings[
+            body_name
+        ]
+
+        maximum_body_dimension = max(
+            settings["length"],
+            settings["width"],
+            settings["height"]
+        )
+
+        label_position[2] += max(
+            maximum_body_dimension * 0.75,
+            0.03
+        )
+
+        label_position_tuple = (
+            float(label_position[0]),
+            float(label_position[1]),
+            float(label_position[2])
+        )
+
+        label_item = self.body_label_items_by_body.get(
+            body_name
+        )
+
+        if label_item is None:
+            label_item = self.create_gl_text_item(
+                position=label_position_tuple,
+                text=body_name,
+                font=self.body_label_font,
+                alignment=(
+                    Qt.AlignmentFlag.AlignHCenter
+                    | Qt.AlignmentFlag.AlignBottom
+                ),
+                warning_kind="body"
+            )
+
+            if label_item is not None:
+                self.body_label_items_by_body[
+                    body_name
+                ] = label_item
+
+            return
+
+        try:
+            label_item.setData(
+                pos=np.asarray(
+                    label_position_tuple,
+                    dtype=float
+                )
+            )
+
+        except Exception as exc:
+            self.body_label_warning = (
+                f"Unable to update body label "
+                f"{body_name!r}: {exc}"
+            )
+
+    def remove_body_label(
+        self,
+        body_name: str
+    ) -> None:
+        label_item = self.body_label_items_by_body.pop(
+            body_name,
+            None
+        )
+
+        if label_item is not None:
+            self.view_3d_widget.removeItem(label_item)
 
     def rebuild_body_geometry_cache(self) -> None:
         self.base_vertices_by_body.clear()
@@ -2552,6 +3349,11 @@ class Recorded3DPlaybackTab(QWidget):
                 shape=settings["shape"]
             )
 
+        self.update_body_label_entry(
+            body_name,
+            position_display
+        )
+
     def update_3d_view(self) -> None:
         session = self.session
 
@@ -2570,6 +3372,17 @@ class Recorded3DPlaybackTab(QWidget):
 
                 self.view_3d_widget.removeItem(
                     mesh_item
+                )
+
+                self.remove_body_label(
+                    body_name
+                )
+
+        for body_name in list(
+                self.body_label_items_by_body.keys()):
+            if body_name not in selected_body_set:
+                self.remove_body_label(
+                    body_name
                 )
 
         if not selected_bodies:
@@ -2915,6 +3728,11 @@ class Recorded3DPlaybackTab(QWidget):
         self.actual_msaa_samples = None
 
         self.mesh_items_by_body.clear()
+        self.body_label_items_by_body.clear()
+        self.axis_label_items.clear()
+        self.room_visual_items.clear()
+        self.room_visual_warning = None
+        self.body_label_warning = None
 
         detached_widget = self.preview_scroll_area.takeWidget()
 
@@ -2934,12 +3752,11 @@ class Recorded3DPlaybackTab(QWidget):
             azimuth=old_options.get("azimuth")
         )
 
-        self.grid_3d = create_default_3d_grid()
-        self.view_3d_widget.addItem(self.grid_3d)
         self.preview_scroll_area.setWidget(
             self.view_3d_widget
         )
 
+        self.rebuild_room_visuals()
         self.apply_preview_resolution()
         self.update_3d_view()
 
@@ -3039,6 +3856,14 @@ class LivePlaybackTab(QWidget):
         self.preview_scroll_area = QScrollArea()
         self.preview_scroll_area.setAlignment(
             Qt.AlignmentFlag.AlignCenter
+        )
+        self.preview_scroll_area.setStyleSheet(
+            "QScrollArea { background-color: white; }"
+            "QScrollArea > QWidget > QWidget "
+            "{ background-color: white; }"
+        )
+        self.preview_scroll_area.viewport().setStyleSheet(
+            "background-color: white;"
         )
         self.preview_scroll_area.setWidgetResizable(True)
         self.preview_scroll_area.setWidget(
