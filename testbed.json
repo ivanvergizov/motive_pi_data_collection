@@ -1,0 +1,39 @@
+{
+  "controller": {
+    "ip": "192.168.2.201",
+    "bind_ip": "0.0.0.0",
+    "data_port": 7000,
+    "output_directory": "udp_output"
+  },
+  "sync": {
+    "device_port": 7101,
+    "interval_s": 1.0,
+    "sample_window": 60,
+    "ready_timeout_s": 12.0
+  },
+  "devices": {
+    "network_prefix": "192.168.2",
+    "sample_rate_hz": 200.0,
+    "nodes": [116, 117, 118, 119, 120]
+  },
+  "sdr": {
+    "enabled": true,
+    "port": 55555
+  },
+  "motive": {
+    "enabled": false,
+    "server_ip": "127.0.0.1",
+    "client_ip": "192.168.2.201",
+    "use_multicast": true,
+    "body_names": {}
+  },
+  "ssh": {
+    "username": "ucanlab",
+    "password": "ucanlab",
+    "management_prefix": "192.168.2",
+    "connect_timeout_s": 5,
+    "max_parallel": 8,
+    "remote_directory": "/home/ucanlab/ucan_TB/udp_device_sender",
+    "remote_python": "/usr/bin/python3"
+  }
+}
