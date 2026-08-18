@@ -14,6 +14,7 @@ from motion_app.core.tracking_data import TrackingDataProvider
 from motion_app.ui.widgets.session_source import SessionSourceWidget
 from motion_app.ui.widgets.signal_selection import SignalSelectionWidget
 from motion_app.ui.widgets.smoothing_controls import SmoothingControlsWidget
+from motion_app.ui.widgets.sidebar import configure_sidebar
 
 
 class SignalPlotTab(QWidget):
@@ -53,9 +54,7 @@ class SignalPlotTab(QWidget):
         settings_layout.addStretch()
 
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(340)
-        scroll.setWidget(settings)
+        configure_sidebar(scroll, settings, minimum_width=340)
 
         layout = QHBoxLayout(self)
         layout.addWidget(scroll)

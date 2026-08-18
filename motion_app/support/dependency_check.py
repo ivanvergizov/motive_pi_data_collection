@@ -6,16 +6,20 @@ import subprocess
 import sys
 
 
-DEPENDENCY_IMPORTS = {
-    "numpy": "numpy",
-    "pandas": "pandas",
+REQUIREMENTS_PATH = Path(__file__).resolve().parents[2] / "requirements.txt"
+IMPORT_ALIASES = {
     "PySide6": "PySide6.QtCore",
-    "pyqtgraph": "pyqtgraph",
-    "pyvista": "pyvista",
-    "pyvistaqt": "pyvistaqt",
     "vtk": "vtkmodules.vtkRenderingCore",
     "PyOpenGL": "OpenGL.GL",
 }
+
+
+def _requirements() -> list[str]:
+    return [
+        line.strip()
+        for line in REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 
 def _python_executable() -> str:
@@ -29,7 +33,8 @@ def _python_executable() -> str:
 
 def _missing_dependencies() -> dict[str, str]:
     missing: dict[str, str] = {}
-    for package, module in DEPENDENCY_IMPORTS.items():
+    for package in _requirements():
+        module = IMPORT_ALIASES.get(package, package)
         try:
             importlib.import_module(module)
         except Exception as exc:
@@ -75,13 +80,10 @@ def ensure_dependencies_or_exit() -> None:
         return
 
     missing_text = "\n".join(f"- {name}: {error}" for name, error in missing.items())
-    python = _python_executable()
-    command = [python, "-m", "pip", "install", *DEPENDENCY_IMPORTS]
-
+    command = [_python_executable(), "-m", "pip", "install", "-r", str(REQUIREMENTS_PATH)]
     message = (
         "Some required packages are missing or broken:\n\n"
-        f"{missing_text}\n\n"
-        "Install/repair them now?\n\n"
+        f"{missing_text}\n\nInstall/repair them now?\n\n"
         + subprocess.list2cmdline(command)
     )
     if not _dialog("Missing Python Dependencies", message, question=True):

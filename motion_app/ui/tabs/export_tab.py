@@ -36,6 +36,7 @@ from motion_app.exporting.video_export import (
 from motion_app.ui.widgets.body_selection import BodySelectionWidget
 from motion_app.ui.widgets.render_settings import RenderSettingsWidget
 from motion_app.ui.widgets.session_source import SessionSourceWidget
+from motion_app.ui.widgets.sidebar import configure_sidebar
 from motion_app.ui.widgets.smoothing_controls import SmoothingControlsWidget
 
 
@@ -153,10 +154,7 @@ class ExportTab(QWidget):
         layout.addStretch()
 
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(340)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(settings)
+        configure_sidebar(scroll, settings, fixed_width=340)
 
         root = QHBoxLayout(self)
         root.addWidget(scroll)

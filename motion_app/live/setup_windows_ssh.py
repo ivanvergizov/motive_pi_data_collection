@@ -60,7 +60,7 @@ def require_ssh() -> str:
 
 def make_askpass_environment(password: str, directory: Path) -> dict[str, str]:
     """Create a temporary Windows SSH_ASKPASS helper for one setup run."""
-    helper = directory / "udp_testbed_askpass.cmd"
+    helper = directory / "position_plotter_askpass.cmd"
     helper.write_text(
         "@echo off\r\n"
         'powershell.exe -NoProfile -NonInteractive -Command '
@@ -216,7 +216,7 @@ def main() -> None:
         )
 
         for device in devices:
-            host = device.management_ip
+            host = device.data_ip
             print(f"\nNode {device.node} ({host})")
 
             installed, detail = install_key_on_pi(
@@ -255,7 +255,7 @@ def main() -> None:
     if username != config.ssh.username:
         print(
             "Update ssh.username in testbed.json to match the username used "
-            "above before using rpi_udp_controller.py or sync_tester.py run."
+            "above before using rpi_udp_controller.py or run_rpi_motive_udp.py."
         )
 
 
