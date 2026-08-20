@@ -1,4 +1,5 @@
 {
+  "recording_rate_hz": 1,
   "controller": {
     "ip": "10.1.1.51",
     "data_port": 7000,
@@ -13,23 +14,23 @@
     "enabled": false,
     "network_prefix": "10.1.1",
     "sample_rate_hz": 200.0,
+    "data_mode": "test",
     "nodes": [
       116,
       117,
       118,
       119,
       120
-    ],
-    "data_mode": "test"
+    ]
   },
   "sdr": {
-    "host": "127.0.0.1",
+    "host": "10.1.1.51",
     "port": 55555
   },
   "motive": {
     "enabled": true,
-    "server_ip": "127.0.0.1",
-    "use_multicast": true
+    "server_ip": "10.1.1.51",
+    "use_multicast": false
   },
   "ssh": {
     "username": "ucanlab",
@@ -38,6 +39,5 @@
     "max_parallel": 10,
     "remote_directory": "/home/ucanlab/ucan_TB/udp_device_sender",
     "remote_python": "/usr/bin/python3"
-  },
-  "recording_rate_hz": null
+  }
 }
