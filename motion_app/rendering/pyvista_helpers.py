@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 import numpy as np
@@ -23,6 +24,11 @@ from motion_app.rendering.scene_style import (
     ROOM_VERTICAL_CAMERA_SHIFT_FRACTION,
 )
 
+
+@dataclass
+class RoomActors:
+    axes: object
+    box: object
 
 
 def sync_interactive_dpi(target, display_widget=None) -> tuple[int, float]:
@@ -88,10 +94,11 @@ def apply_annotation_viewport_style(
     pixel_scale = viewport_scale * device_pixel_ratio
 
     if room_actor is not None:
-        room_actor.SetScreenSize(max(1.0, AXIS_TEXT_HEIGHT_DIP_AT_REFERENCE * pixel_scale))
-        room_actor.SetLabelOffset(max(1.0, AXIS_LABEL_OFFSET_DIP_AT_REFERENCE * pixel_scale))
+        axes = room_actor.axes
+        axes.SetScreenSize(max(1.0, AXIS_TEXT_HEIGHT_DIP_AT_REFERENCE * pixel_scale))
+        axes.SetLabelOffset(max(1.0, AXIS_LABEL_OFFSET_DIP_AT_REFERENCE * pixel_scale))
         title_offset = max(1.0, AXIS_TITLE_OFFSET_DIP_AT_REFERENCE * pixel_scale)
-        room_actor.SetTitleOffset((title_offset, title_offset))
+        axes.SetTitleOffset((title_offset, title_offset))
 
     body_font_points = max(1, round(BODY_LABEL_FONT_SIZE_PT_AT_REFERENCE * viewport_scale))
     body_offset = max(1, round(BODY_LABEL_OFFSET_DIP_AT_REFERENCE * pixel_scale))
@@ -164,14 +171,14 @@ def add_body_actors(
     return actors
 
 
-def add_room_bounds(plotter, bounds: RoomBounds, line_scale: float = 1.0):
+def add_room_bounds(plotter, bounds: RoomBounds, line_scale: float = 1.0) -> RoomActors:
     x_span, y_span, z_span = bounds.spans()
-    actor = plotter.show_bounds(
+    axes = plotter.show_bounds(
         bounds=list(bounds.as_sequence()),
         grid="back",
         location="outer",
         ticks="both",
-        all_edges=True,
+        all_edges=False,
         xtitle="X (m)",
         ytitle="Y (m)",
         ztitle="Z (m)",
@@ -186,28 +193,42 @@ def add_room_bounds(plotter, bounds: RoomBounds, line_scale: float = 1.0):
     )
 
     for getter in (
-        actor.GetXAxesLinesProperty,
-        actor.GetYAxesLinesProperty,
-        actor.GetZAxesLinesProperty,
+        axes.GetXAxesLinesProperty,
+        axes.GetYAxesLinesProperty,
+        axes.GetZAxesLinesProperty,
     ):
         prop = getter()
         prop.SetColor(*AXIS_COLOR)
         prop.SetLineWidth(1.5 * line_scale)
 
     for getter in (
-        actor.GetXAxesGridlinesProperty,
-        actor.GetYAxesGridlinesProperty,
-        actor.GetZAxesGridlinesProperty,
+        axes.GetXAxesGridlinesProperty,
+        axes.GetYAxesGridlinesProperty,
+        axes.GetZAxesGridlinesProperty,
     ):
         prop = getter()
         prop.SetColor(*GRID_COLOR)
         prop.SetOpacity(0.55)
         prop.SetLineWidth(line_scale)
 
-    return actor
+    box = plotter.add_mesh(
+        pv.Cube(bounds=bounds.as_sequence()),
+        style="wireframe",
+        color="#4c4c4c",
+        line_width=1.5 * line_scale,
+        lighting=False,
+        reset_camera=False,
+        render=False,
+        name="room:box",
+    )
+    box.use_bounds = False
+    return RoomActors(axes=axes, box=box)
 
 
-def set_room_components(actor, *, axes: bool, grid: bool, text: bool) -> None:
+def set_room_components(room: RoomActors, *, axes: bool, grid: bool, text: bool) -> None:
+    actor = room.axes
+    room.box.visibility = grid
+
     for getter in (
         actor.GetXAxesLinesProperty,
         actor.GetYAxesLinesProperty,

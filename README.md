@@ -1,22 +1,24 @@
 # Position Plotter
 
-Position Plotter is a PySide6 application for loading recorded Motive CSV data, plotting signals, viewing rigid-body motion in 3D, receiving live Motive and Raspberry Pi data, recording live CSV data, and exporting rendered video.
+Position Plotter is a PySide6 application for loading Motive CSV files, plotting rigid-body signals, viewing recorded motion in 3D, receiving live Motive and Raspberry Pi data, recording live data, and exporting video.
 
 ## Installation
 
-Install Python dependencies from the project directory:
+Install the Python packages from the project directory.
+
+Windows:
 
 ```powershell
 py -m pip install -r requirements.txt
 ```
 
-On Linux:
+Linux:
 
 ```bash
 python3 -m pip install -r requirements.txt
 ```
 
-For Raspberry Pi control from Windows, OpenSSH client tools must be available. Run the SSH setup helper once if the Pis do not already accept passwordless SSH:
+For Raspberry Pi administration from Windows, OpenSSH client tools must be available. To install the configured SSH key on the Pis:
 
 ```powershell
 py setup_windows_ssh.py --nodes 116-120
@@ -40,27 +42,35 @@ The main window contains Signal Plots, Recorded 3D, Live, and Export tabs.
 
 ## Data folders
 
-- `csv_data/` contains CSV data files used with the program. `test2.csv` is included here.
-- `csv_renders/` is an empty workspace for CSV-render outputs.
-- `udp_output/` is the default live-recording directory. It is created when a recording is started.
+- `csv_data/` contains CSV input files. `test2.csv` is included.
+- `csv_renders/` is available for rendered CSV-related output.
+- `udp_output/` is the default live-recording directory and is created when needed.
 
-## Recorded CSV workflow
+## Recorded Motive CSV files
 
-Use the session/file controls in the Signal Plots or Recorded 3D tab to select a Motive CSV file such as:
+The Signal Plots, Recorded 3D, and Export tabs use Motive-style rigid-body CSV files.
+
+The loader expects seven header rows. Rigid-body transform columns are identified from the Type, Name, transform, and dimension header rows. Supported rotation encodings are Quaternion and XYZ.
+
+The live recorder writes Quaternion data in the same seven-row layout. Each rigid body receives these transform columns:
 
 ```text
-csv_data/test2.csv
+Rotation X
+Rotation Y
+Rotation Z
+Rotation W
+Position X
+Position Y
+Position Z
 ```
 
-The loader reads rigid-body positions and rotations, exposes the available bodies/signals, and supplies the data to the plotting and 3D playback controls.
+After all transform columns, each rigid body receives one `Tracking Valid` column. A value of `1` means the body was tracked for that recorded frame. A value of `0` means the body was not tracked. Transform cells are left blank when tracking is invalid.
 
-## Live communication settings
+Live-recorded Motive frame numbers start at `0`. Time starts at `0` seconds and uses the elapsed receive time between recorded frames. This makes the recorded file directly usable by the playback loader.
 
-The Live tab uses `testbed.json` as its saved configuration.
+## Live Raspberry Pi data
 
-### Raspberry Pis / GNU Radio
-
-Enable **Raspberry Pis / GNU Radio** to receive Pi prediction packets and control the selected Pi senders.
+Enable **Raspberry Pis / GNU Radio** in the Live tab to receive Pi measurement packets and administer the selected Pi senders.
 
 Default settings:
 
@@ -76,20 +86,20 @@ GNU Radio ZMQ port:   55555
 TC/local network IP:  10.1.1.51
 ```
 
-`data_mode` in `testbed.json` selects the Pi measurement source:
+`devices.data_mode` in `testbed.json` selects the Pi measurement source:
 
-- `test` sends the repeating values `-1, 0, 1`.
-- `sdr` reads the latest float from the configured GNU Radio ZeroMQ publisher.
+- `test`: sends the repeating sequence `-1, 0, 1`.
+- `sdr`: reads the latest float from the configured GNU Radio ZeroMQ publisher.
 
-At the default Pi sample rate of 200 Hz, one packet is sent every 5 ms.
+At 200 Hz, each Pi sends one packet every 5 ms.
 
-### Motive / NatNet
+All selected Pis send UTB4 measurement packets to the same multicast group and port. The source ID in each packet identifies the Pi. Each TC joins the multicast group on its configured local network interface.
 
-Enable **Motive / NatNet** to receive rigid-body data.
+## Live Motive data
 
-The bundled client reads NatNet 3.x rigid-body descriptions and rigid-body frames. Rigid-body names are obtained from Motive model definitions and matched to live poses by rigid-body ID.
+Enable **Motive / NatNet** in the Live tab to receive rigid-body data.
 
-NatNet ports and multicast group used by the client:
+The NatNet client uses:
 
 ```text
 Command port:        1510
@@ -97,7 +107,9 @@ Data port:           1511
 Multicast group:     239.255.42.99
 ```
 
-For same-machine unicast testing:
+Rigid-body names are read from Motive model definitions and associated with live rigid-body poses by rigid-body ID.
+
+For same-machine unicast operation:
 
 ```text
 Motive server IP:    127.0.0.1
@@ -109,19 +121,26 @@ Motive interface:    Loopback
 For multicast operation:
 
 ```text
-Motive multicast:    checked
-Motive transmission: Multicast
-Motive multicast:    239.255.42.99
-TC/local network IP: local TC network address, e.g. 10.1.1.51
+Motive multicast:       checked
+Motive transmission:    Multicast
+Motive multicast group: 239.255.42.99
+TC/local network IP:    local TC address, such as 10.1.1.51
 ```
 
-When Motive is on another computer, set **Motive server IP** to that computer's normal network address. Each Testbed Controller uses its own local network IP to join the multicast stream.
+If Motive runs on another computer, set **Motive server IP** to that computer's normal network address.
 
 ## Live recording
 
-Enable **Record CSV files** in the Live tab to record received data.
+Enable **Record CSV files** to create a recording directory containing:
 
-The **Recording rate** control is independent of the Live rendering frame rate. Available values are:
+```text
+pi_samples.csv
+motive_rigid_bodies.csv
+```
+
+The **Recording rate** setting controls how often received data is written to disk. It does not limit receiving or Live rendering.
+
+Available values:
 
 ```text
 None
@@ -134,61 +153,66 @@ None
 1 Hz
 ```
 
-`None` records every received Pi sample and Motive frame. A numeric value limits only the rows sent to the background CSV writer. Acquisition and Live visualization continue to consume incoming data at full speed.
+`None` records every received Pi sample and Motive frame. A numeric rate limits each Pi independently and limits Motive by complete frame.
 
-For Pi data, the limit is applied independently to each Pi source. For Motive, the limit is applied per frame and all rigid bodies from each selected frame are written together.
+### `motive_rigid_bodies.csv`
 
-Live recordings contain:
+The file uses the Motive-style seven-row header described above. Every recorded row contains one complete Motive frame. Invalid rigid-body transforms are blank and the corresponding `Tracking Valid` value is `0`.
+
+### `pi_samples.csv`
+
+The first column is `time_ns`. Each configured Pi has one value column, for example:
 
 ```text
-pi_samples.csv
-motive_rigid_bodies.csv
+time_ns,rpi_116,rpi_117,rpi_118
 ```
 
-The default output directory is `udp_output`. Relative output paths are resolved relative to `testbed.json`.
+Each incoming Pi sample creates one row. The value is written only in that Pi's column. Other Pi columns remain blank on that row. This preserves the corrected timestamp of each independently received sample without treating separate Pi transmissions as simultaneous.
+
+Relative recording paths are resolved from the directory containing `testbed.json`.
 
 ## Live communication controls
 
-- **Install/update Pi sender before start** copies the current Pi sender, protocol module, and generated device configuration to the selected Pis.
-- **Set Pi clocks before start** performs the SSH-based coarse clock setting before acquisition.
-- **Leave Pi senders running when stopped** prevents the GUI Stop action from stopping the selected remote senders.
-- **Save settings to testbed.json** writes the current Live settings.
+- **Install/update Pi sender before start** copies the sender, protocol module, and device configuration to each selected Pi.
+- **Set Pi clocks before start** performs coarse Pi clock setting over SSH.
+- **Leave Pi senders running when stopped** leaves the selected remote sender processes running after local communication stops.
+- **Save settings to testbed.json** stores the current Live settings.
 - **Start communication** starts the selected receivers and sources.
-- **Stop** stops local receivers and, unless leave-running is selected, stops the selected Pi senders.
+- **Stop** stops local receivers and stops selected Pi senders unless leave-running is enabled.
+
+Pi install, set-time, start, and stop operations run concurrently for all selected Pis.
 
 ## Raspberry Pi command-line control
 
-Install the sender on selected Pis:
+Install:
 
 ```powershell
 py rpi_udp_controller.py install --nodes 116-120
 ```
 
-Set their clocks:
+Set time:
 
 ```powershell
 py rpi_udp_controller.py set-time --nodes 116-120
 ```
 
-Start senders:
+Start:
 
 ```powershell
 py rpi_udp_controller.py start --nodes 116-120
 ```
 
-Stop senders:
+Stop:
 
 ```powershell
 py rpi_udp_controller.py stop --nodes 116-120
 ```
 
-The controller performs operations in parallel. `ssh.max_parallel` defaults to `10`.
+Node selectors accept ranges and comma-separated values, such as `116-120` or `116,118,120`.
 
 ## Standalone live acquisition
 
-Run live acquisition without the GUI using `run_rpi_motive_udp.py`.
-
-Motive-only unicast test:
+Motive unicast:
 
 ```powershell
 py run_rpi_motive_udp.py --no-pis --motive --motive-unicast --duration 10 --name motive_test
@@ -200,25 +224,25 @@ Motive multicast:
 py run_rpi_motive_udp.py --no-pis --motive --motive-multicast --duration 10 --name motive_multicast
 ```
 
-Pi-only acquisition:
+Pi only:
 
 ```powershell
 py run_rpi_motive_udp.py --pis --no-motive --nodes 116-120 --duration 10 --name pi_test
 ```
 
-Run both sources:
+Pis and Motive:
 
 ```powershell
 py run_rpi_motive_udp.py --pis --motive --nodes 116-120 --duration 30 --name combined
 ```
 
-Limit CSV recording to 30 Hz:
+Record at 30 Hz:
 
 ```powershell
 py run_rpi_motive_udp.py --pis --motive --recording-rate 30 --duration 30 --name combined_30hz
 ```
 
-Record every received sample/frame:
+Record every received sample and frame:
 
 ```powershell
 py run_rpi_motive_udp.py --pis --motive --recording-rate none --duration 30 --name combined_full
@@ -232,6 +256,7 @@ The default configuration is:
 
 ```json
 {
+  "recording_rate_hz": null,
   "controller": {
     "ip": "10.1.1.51",
     "data_port": 7000,
@@ -246,8 +271,8 @@ The default configuration is:
     "enabled": false,
     "network_prefix": "10.1.1",
     "sample_rate_hz": 200.0,
-    "nodes": [116, 117, 118, 119, 120],
-    "data_mode": "test"
+    "data_mode": "test",
+    "nodes": [116, 117, 118, 119, 120]
   },
   "sdr": {
     "host": "127.0.0.1",
@@ -262,109 +287,98 @@ The default configuration is:
     "username": "ucanlab",
     "password": "ucanlab",
     "connect_timeout_s": 5,
-    "max_parallel": 10,
     "remote_directory": "/home/ucanlab/ucan_TB/udp_device_sender",
     "remote_python": "/usr/bin/python3"
-  },
-  "recording_rate_hz": null
+  }
 }
 ```
 
-`recording_rate_hz` may be `null`, `120`, `60`, `30`, `15`, `10`, `5`, or `1`.
+`recording_rate_hz` accepts `null`, `120`, `60`, `30`, `15`, `10`, `5`, or `1`.
 
 ## File and function reference
 
 ### Root files
 
-| File | Purpose / primary entry points |
+| File | Purpose and main entry points |
 |---|---|
-| `position_plotter_gui.pyw` | GUI entry point. `main()` creates the Qt application and `WorkspaceMainWindow`. |
-| `run_rpi_motive_udp.py` | Standalone live receiver. `build_parser()` defines CLI options; `main()` loads settings and runs `LiveAcquisitionSession`. |
-| `rpi_udp_controller.py` | Thin command-line entry point for the Pi controller implementation. |
-| `setup_windows_ssh.py` | Thin command-line entry point for Windows SSH-key setup. |
-| `testbed.json` | Saved Live acquisition, network, Pi, Motive, SSH, and recording-rate settings. |
+| `position_plotter_gui.pyw` | GUI entry point. `main()` creates the Qt application and main window. |
+| `run_rpi_motive_udp.py` | Standalone live acquisition. `build_parser()` defines CLI settings and `main()` runs `LiveAcquisitionSession`. |
+| `rpi_udp_controller.py` | Command-line entry point for Pi install, set-time, start, and stop operations. |
+| `setup_windows_ssh.py` | Windows OpenSSH key setup entry point. |
+| `testbed.json` | Live acquisition, network, Pi, Motive, SSH, and recording settings. |
 | `rigid_body_types.csv` | Maps rigid-body names to application body types. |
 | `requirements.txt` | Python package requirements. |
 
 ### `motion_app/core`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `app_types.py` | Shared data types: `PlotSignalSelection`, `CurveSpec`, `BodyDisplaySettings`, `BodyPose`, `SceneFrame`, `RoomBounds`. |
-| `body_config.py` | `load_body_type_map()` loads rigid-body type mappings from CSV. |
-| `constants.py` | Shared rendering constants plus `color_for_curve()` and `parse_preview_aa()`. |
-| `motive_io.py` | Recorded Motive CSV loader. `load_motive_rigid_body_csv()` builds `TrackingSession`; `find_rotation_encoding()` identifies quaternion/Euler columns. |
-| `playback_controller.py` | `PlaybackController` manages recorded playback time, frame position, play/pause, and looping. |
-| `rigid_body_math.py` | Position-axis conversion and quaternion/Euler/rotation-matrix conversion functions. |
-| `room_geometry.py` | `calculate_room_bounds()`, `calculate_room_axis_bounds()`, and tick-spacing calculations. |
-| `signal_processing.py` | Missing-value filling, sample-rate estimation, position/quaternion smoothing, and smoothing-window conversion. |
-| `tracking_data.py` | `TrackingDataProvider` supplies synchronized position/rotation samples; `nearest_sample_index()` locates samples by time. |
+| `app_types.py` | Shared data types including `BodyPose`, `SceneFrame`, and `RoomBounds`. |
+| `body_config.py` | `load_body_type_map()` loads rigid-body type mappings. |
+| `constants.py` | Shared signal and rendering constants. |
+| `motive_io.py` | `load_motive_rigid_body_csv()` loads Motive-style recorded CSV data into a `TrackingSession`. |
+| `playback_controller.py` | `PlaybackController` manages playback time, seek, play, pause, speed, and looping. |
+| `rigid_body_math.py` | Position-axis, quaternion, Euler, and rotation-matrix conversions. |
+| `room_geometry.py` | Calculates 3D room bounds and tick spacing from recorded positions. |
+| `signal_processing.py` | Missing-value interpolation, sample-rate estimation, and smoothing. |
+| `tracking_data.py` | `TrackingDataProvider` supplies positions, rotations, signals, scene frames, and room bounds. |
 
 ### `motion_app/live`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `acquisition_session.py` | `LiveAcquisitionSession` coordinates recorder, Pi receiver/controller, and Motive receiver. `start()` and `stop()` control a live session. |
-| `motive_receiver.py` | `MotiveReceiver` combines NatNet model names and rigid-body frames into application `MotiveFrame` objects. |
-| `natnet_client.py` | `NatNetRigidBodyClient` implements NatNet 3.x command, unicast, multicast, rigid-body model-definition, and rigid-body frame handling. |
-| `pi_receiver.py` | `PiReceiver` joins the Pi multicast group, receives UTB4 measurements, runs the RTT clock exchange, and stores latest `PiSample` values. |
-| `pi_sender.py` | Raspberry Pi sender. `run_sender()` emits test or SDR values to the shared multicast group and answers clock-sync requests. |
-| `protocol.py` | Binary UTB4 data and UTBS synchronization packet pack/unpack functions. |
-| `recording.py` | `CsvSessionRecorder` performs optional rate limiting and background CSV writing for Pi and Motive data. |
-| `rpi_udp_controller.py` | `RemoteController` performs Pi install, set-time, start, and stop operations through SSH/SCP. |
-| `setup_windows_ssh.py` | Windows OpenSSH key creation, installation, and verification helpers. |
-| `testbed.py` | Configuration dataclasses plus `load_testbed()`, `override_testbed()`, `save_testbed()`, and node-selector parsing. |
+| `acquisition_session.py` | `LiveAcquisitionSession` coordinates Pi, Motive, and recording start/stop behavior. |
+| `motive_receiver.py` | Converts NatNet model names and rigid-body frames into application `MotiveFrame` objects. |
+| `natnet_client.py` | NatNet rigid-body command, unicast, multicast, model-definition, and frame handling. |
+| `pi_receiver.py` | Joins the Pi multicast group, receives UTB4 data, performs RTT time synchronization, and stores latest samples. |
+| `pi_sender.py` | Runs on each Pi, obtains test or GNU Radio values, multicasts UTB4 data, and responds to sync requests. |
+| `protocol.py` | UTB4 data and UTBS synchronization packet encoding and decoding. |
+| `recording.py` | Recording-rate limiting and background writing of Motive-style and Pi CSV files. |
+| `rpi_udp_controller.py` | `RemoteController` performs Pi install, set-time, start, and stop through SSH/SCP. |
+| `setup_windows_ssh.py` | Windows SSH key creation and installation helpers. |
+| `testbed.py` | Configuration types plus load, override, save, and node-selector functions. |
 
 ### `motion_app/ui`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main classes |
 |---|---|
-| `main_window.py` | `WorkspaceMainWindow` creates the application tabs and shared toolbar behavior. |
-| `tabs/signal_plot_tab.py` | `SignalPlotTab` controls recorded signal selection and plotting. |
-| `tabs/recorded_3d_tab.py` | `Recorded3DPlaybackTab` controls recorded rigid-body 3D playback. |
-| `tabs/live_tab.py` | `LivePlaybackTab` owns Live settings, communication controls, Live rendering, and current source status. |
-| `tabs/export_tab.py` | `ExportTab` configures and starts video export. |
-| `plotting/multi_axis_signal_plot.py` | `MultiAxisSignalPlot` renders one or more selected signals with independent axes. |
-| `widgets/body_selection.py` | `BodySelectionWidget` selects displayed rigid bodies. |
-| `widgets/playback_controls.py` | `PlaybackControlsWidget` contains playback-time controls. |
-| `widgets/render_settings.py` | `RenderSettingsWidget` contains Live/preview rendering controls. |
-| `widgets/session_source.py` | `SessionSourceWidget` selects and loads recorded sessions/files. |
-| `widgets/sidebar.py` | `configure_sidebar()` applies shared scroll/wrapping behavior to sidebars. |
-| `widgets/signal_selection.py` | `SignalSelectionWidget` selects plotted signal fields. |
-| `widgets/smoothing_controls.py` | `SmoothingControlsWidget` configures smoothing enable/window values. |
+| `main_window.py` | Creates the main application tabs and shared toolbar. |
+| `tabs/signal_plot_tab.py` | Recorded signal plotting controls. |
+| `tabs/recorded_3d_tab.py` | Recorded rigid-body 3D playback controls. |
+| `tabs/live_tab.py` | Live source settings, communication controls, recording controls, and Live rendering. |
+| `tabs/export_tab.py` | Video-export settings, preview, process control, and progress display. |
+| `plotting/multi_axis_signal_plot.py` | Multi-axis signal rendering. |
+| `widgets/body_selection.py` | Rigid-body selection controls. |
+| `widgets/playback_controls.py` | Playback controls. |
+| `widgets/render_settings.py` | Rendering settings. |
+| `widgets/session_source.py` | Recorded file selection and loading. |
+| `widgets/sidebar.py` | Shared sidebar sizing and text wrapping. |
+| `widgets/signal_selection.py` | Signal selection controls. |
+| `widgets/smoothing_controls.py` | Smoothing controls. |
 
 ### `motion_app/rendering`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `pyvista_scene.py` | `PyVistaRigidBodyScene` manages the interactive PyVista scene, body actors, labels, camera, and frame updates. |
-| `pyvista_helpers.py` | Creates and updates body actors, labels, room bounds, camera framing, and DPI-sensitive annotations. |
-| `scene_style.py` | Shared scene styling constants. |
+| `pyvista_scene.py` | Interactive PyVista rigid-body scene and frame updates. |
+| `pyvista_helpers.py` | Body actors, labels, room axes, room box, camera framing, and annotation sizing. |
+| `scene_style.py` | Scene styling constants. |
 
 ### `motion_app/geometry`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `body_geometry.py` | `BodyDimensions`, `body_dimensions()`, and `create_body_geometry()` define supported rigid-body geometry. |
+| `body_geometry.py` | Supported rigid-body dimensions and mesh generation. |
 
 ### `motion_app/exporting`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `video_export.py` | FFmpeg discovery, encoding settings, frame-count calculation, command construction, process start/finalization, and frame writing. |
-| `export_worker.py` | Off-screen PyVista rendering, asynchronous GPU readback/compositing, FFmpeg queueing, and `run_export()`. |
+| `video_export.py` | FFmpeg discovery, encoding configuration, frame count, process creation, and frame writing. |
+| `export_worker.py` | Off-screen PyVista rendering, GPU readback/compositing, and export execution. |
 
 ### `motion_app/support`
 
-| File | Purpose / primary classes and functions |
+| File | Purpose and main functions |
 |---|---|
-| `dependency_check.py` | Reads `requirements.txt`, checks required imports, and presents the dependency-install prompt when required packages are missing. |
-
-### `tests`
-
-| File | Purpose |
-|---|---|
-| `test_core.py` | Core coordinate, body geometry, frame-count, and related application tests. |
-| `test_live_config.py` | Live configuration, recording path/rate, Pi stop behavior, and Motive-name tests. |
-| `test_live_protocol.py` | UTB4/UTBS packet and Pi multicast receiver tests. |
-| `test_natnet_minimal.py` | NatNet 3.x rigid-body model/frame parsing plus unicast and multicast transport tests. |
+| `dependency_check.py` | Reads `requirements.txt` and checks required Python imports before the GUI starts. |

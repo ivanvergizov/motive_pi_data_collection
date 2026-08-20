@@ -266,7 +266,9 @@ echo "$pid"
         operation: Callable[[DevicePlan], NodeResult],
     ) -> list[NodeResult]:
         device_list = list(devices)
-        with ThreadPoolExecutor(max_workers=self.config.ssh.max_parallel) as executor:
+        if not device_list:
+            return []
+        with ThreadPoolExecutor(max_workers=len(device_list)) as executor:
             futures = [executor.submit(operation, device) for device in device_list]
             return sorted((future.result() for future in as_completed(futures)), key=lambda result: result.node)
 

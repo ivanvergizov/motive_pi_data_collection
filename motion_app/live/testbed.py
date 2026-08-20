@@ -33,7 +33,6 @@ class SshConfig:
     username: str
     password: str
     connect_timeout_s: int
-    max_parallel: int
     remote_directory: str
     remote_python: str
 
@@ -205,7 +204,6 @@ def load_testbed(path: Path | str = DEFAULT_CONFIG_PATH) -> TestbedConfig:
         username=str(ssh_raw.get("username", "ucanlab")),
         password=str(ssh_raw.get("password", "")),
         connect_timeout_s=int(ssh_raw.get("connect_timeout_s", 5)),
-        max_parallel=int(ssh_raw.get("max_parallel", 10)),
         remote_directory=str(ssh_raw.get("remote_directory", "/home/ucanlab/ucan_TB/udp_device_sender")),
         remote_python=str(ssh_raw.get("remote_python", "/usr/bin/python3")),
     )
@@ -327,7 +325,6 @@ def save_testbed(config: TestbedConfig, path: Path | str | None = None) -> Path:
             "username": config.ssh.username,
             "password": config.ssh.password,
             "connect_timeout_s": config.ssh.connect_timeout_s,
-            "max_parallel": config.ssh.max_parallel,
             "remote_directory": config.ssh.remote_directory,
             "remote_python": config.ssh.remote_python,
         },

@@ -105,6 +105,8 @@ class PyVistaRigidBodyScene(QWidget):
 
     def set_room_bounds(self, bounds: RoomBounds) -> None:
         self.bounds = bounds
+        if self.room_actor is not None:
+            self.plotter.remove_actor(self.room_actor.box, render=False)
         self.plotter.remove_bounds_axes()
         self.room_actor = add_room_bounds(self.plotter, bounds)
         frame_camera(self.plotter, bounds)

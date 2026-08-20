@@ -61,6 +61,7 @@ class LiveAcquisitionSession:
                 self.config.controller.output_directory,
                 self.name,
                 self.config.recording_rate_hz,
+                tuple(device.node for device in self.devices) if self.use_pis else (),
             )
 
         if self.use_pis:

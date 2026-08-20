@@ -98,7 +98,7 @@ class LivePlaybackTab(QWidget):
         self.use_motive = QCheckBox("Motive / NatNet")
         self.use_motive.setChecked(cfg.motive.enabled)
         self.motive_server_ip = QLineEdit(cfg.motive.server_ip)
-        self.motive_multicast = QCheckBox("Motive multicast (uncheck for temporary unicast test)")
+        self.motive_multicast = QCheckBox("Motive multicast")
         self.motive_multicast.setChecked(cfg.motive.use_multicast)
 
         self.record_checkbox = QCheckBox("Record CSV files")

@@ -1,5 +1,5 @@
 {
-  "recording_rate_hz": 1,
+  "recording_rate_hz": null,
   "controller": {
     "ip": "10.1.1.51",
     "data_port": 7000,
@@ -24,7 +24,7 @@
     ]
   },
   "sdr": {
-    "host": "10.1.1.51",
+    "host": "127.0.0.1",
     "port": 55555
   },
   "motive": {
@@ -36,7 +36,6 @@
     "username": "ucanlab",
     "password": "ucanlab",
     "connect_timeout_s": 5,
-    "max_parallel": 10,
     "remote_directory": "/home/ucanlab/ucan_TB/udp_device_sender",
     "remote_python": "/usr/bin/python3"
   }
