@@ -1,4 +1,4 @@
 **/__pycache__/
 *.mp4
-udp_output/
+live_csv_output/
 csv_renders/

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import threading
-from dataclasses import replace
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -31,6 +30,7 @@ from motion_app.live.motive_receiver import MotiveFrame
 from motion_app.live.testbed import DEFAULT_CONFIG_PATH, load_testbed, override_testbed, save_testbed
 from motion_app.rendering.pyvista_scene import PyVistaRigidBodyScene
 from motion_app.ui.widgets.render_settings import RenderSettingsWidget
+from motion_app.ui.widgets.sdr_receivers import SdrReceiversWidget
 from motion_app.ui.widgets.sidebar import configure_sidebar
 from motion_app.ui.widgets.smoothing_controls import SmoothingControlsWidget
 
@@ -55,7 +55,7 @@ class LivePlaybackTab(QWidget):
         self.smoothing = SmoothingControlsWidget("Live smoothing", "Apply live smoothing")
         self.render_settings = RenderSettingsWidget(
             "Live preview settings",
-            "Rendering is decoupled from Motive and Pi receive rates.",
+            "Rendering is decoupled from SDR measurement and Motive receive rates.",
         )
         self.metrics_label = QLabel()
         self.metrics_label.setWordWrap(True)
@@ -79,25 +79,30 @@ class LivePlaybackTab(QWidget):
 
     def _create_controls(self) -> None:
         cfg = self.base_config
-        self.use_pis = QCheckBox("Raspberry Pis / GNU Radio")
-        self.use_pis.setChecked(cfg.devices_enabled)
-        self.nodes_edit = QLineEdit(self._node_selector_text())
-        self.pi_network_edit = QLineEdit(cfg.device_network_prefix)
-        self.sample_rate = QDoubleSpinBox()
-        self.sample_rate.setRange(1.0, 100000.0)
-        self.sample_rate.setDecimals(1)
-        self.sample_rate.setValue(cfg.default_sample_rate_hz)
-        self.sample_rate.setSuffix(" Hz")
-        self.sdr_host_edit = QLineEdit(cfg.sdr.host)
-        self.sdr_port = QLineEdit(str(cfg.sdr.port))
+        self.use_sdr = QCheckBox("SDR / GNU Radio power receivers")
+        self.use_sdr.setChecked(cfg.sdr.enabled)
+        self.sdr_rate = QDoubleSpinBox()
+        self.sdr_rate.setRange(0.1, 100000.0)
+        self.sdr_rate.setDecimals(2)
+        self.sdr_rate.setSingleStep(1.0)
+        self.sdr_rate.setValue(cfg.sdr.recording_rate_hz)
+        self.sdr_rate.setSuffix(" Hz")
+        self.sdr_receivers = SdrReceiversWidget()
+        self.sdr_receivers.set_receivers(cfg.sdr.receivers)
+        self.sdr_rate.setEnabled(cfg.sdr.enabled)
+        self.sdr_receivers.setEnabled(cfg.sdr.enabled)
+        self.use_sdr.toggled.connect(self.sdr_rate.setEnabled)
+        self.use_sdr.toggled.connect(self.sdr_receivers.setEnabled)
 
-        self.controller_ip = QLineEdit(cfg.controller.ip)
-        self.data_port = QLineEdit(str(cfg.controller.data_port))
-        self.multicast_group = QLineEdit(cfg.controller.multicast_group)
+        self.motive_interface_ip = QLineEdit(cfg.motive.interface_ip)
+        self.motive_interface_ip.setToolTip(
+            "Local IPv4 address of this controller on the network used for NatNet traffic and multicast membership."
+        )
 
-        self.use_motive = QCheckBox("Motive / NatNet")
+        self.use_motive = QCheckBox("Enable Motive / NatNet")
         self.use_motive.setChecked(cfg.motive.enabled)
         self.motive_server_ip = QLineEdit(cfg.motive.server_ip)
+        self.motive_server_ip.setToolTip("IPv4 address of the computer running Motive/NatNet.")
         self.motive_multicast = QCheckBox("Motive multicast")
         self.motive_multicast.setChecked(cfg.motive.use_multicast)
 
@@ -105,16 +110,12 @@ class LivePlaybackTab(QWidget):
         self.record_checkbox.setChecked(True)
         self.recording_rate = QComboBox()
         self.recording_rate.addItems(["None", "120 Hz", "60 Hz", "30 Hz", "15 Hz", "10 Hz", "5 Hz", "1 Hz"])
-        current_rate = "None" if cfg.recording_rate_hz is None else f"{cfg.recording_rate_hz} Hz"
+        current_rate = "None" if cfg.motive.recording_rate_hz is None else f"{cfg.motive.recording_rate_hz} Hz"
         self.recording_rate.setCurrentText(current_rate)
         self.output_directory = QLineEdit(str(cfg.controller.output_directory))
         self.output_browse = QPushButton("Browse")
         self.output_browse.clicked.connect(self._browse_output)
         self.run_name = QLineEdit("live")
-
-        self.install_checkbox = QCheckBox("Install/update Pi sender before start")
-        self.set_time_checkbox = QCheckBox("Set Pi clocks before start")
-        self.leave_running_checkbox = QCheckBox("Leave Pi senders running when stopped")
 
         self.save_button = QPushButton("Save settings to testbed.json")
         self.start_button = QPushButton("Start communication")
@@ -124,20 +125,13 @@ class LivePlaybackTab(QWidget):
         self.start_button.clicked.connect(self._start_session)
         self.stop_button.clicked.connect(self._stop_session)
 
-    def _node_selector_text(self) -> str:
-        nodes = [device.node for device in self.base_config.devices]
-        if not nodes:
-            return ""
-        if nodes == list(range(nodes[0], nodes[-1] + 1)):
-            return f"{nodes[0]}-{nodes[-1]}"
-        return ",".join(map(str, nodes))
-
     def _build_layout(self) -> None:
         settings = QWidget()
         layout = QVBoxLayout(settings)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(self._source_group())
-        layout.addWidget(self._network_group())
+        layout.addWidget(self._sdr_group())
+        layout.addWidget(self.sdr_receivers)
+        layout.addWidget(self._motive_group())
         layout.addWidget(self._recording_group())
         layout.addWidget(self._control_group())
         layout.addWidget(self.smoothing)
@@ -146,43 +140,41 @@ class LivePlaybackTab(QWidget):
         layout.addStretch()
 
         scroll = QScrollArea()
-        configure_sidebar(
-            scroll,
-            settings,
-            minimum_width=390,
-            maximum_width=470,
-        )
+        configure_sidebar(scroll, settings, minimum_width=430, maximum_width=540)
         root = QHBoxLayout(self)
         root.addWidget(scroll)
         root.addWidget(self.scene, stretch=1)
 
-    def _source_group(self) -> QGroupBox:
-        group = QGroupBox("Sources")
+    def _sdr_group(self) -> QGroupBox:
+        group = QGroupBox("SDR / GNU Radio")
         form = QFormLayout(group)
-        form.addRow(self.use_pis)
-        form.addRow("Pi nodes", self.nodes_edit)
-        form.addRow("Pi data network", self.pi_network_edit)
-        form.addRow("Pi sample rate", self.sample_rate)
-        form.addRow("GNU Radio host", self.sdr_host_edit)
-        form.addRow("GNU Radio ZMQ port", self.sdr_port)
-        form.addRow(self.use_motive)
-        form.addRow("Motive server IP", self.motive_server_ip)
-        form.addRow(self.motive_multicast)
+        form.addRow(self.use_sdr)
+        form.addRow("SDR recording rate", self.sdr_rate)
         return group
 
-    def _network_group(self) -> QGroupBox:
-        group = QGroupBox("Controller UDP")
-        form = QFormLayout(group)
-        form.addRow("TC / local network IP", self.controller_ip)
-        form.addRow("Pi multicast group", self.multicast_group)
-        form.addRow("Pi data port", self.data_port)
+    def _motive_group(self) -> QGroupBox:
+        group = QGroupBox("Motive / NatNet")
+        layout = QVBoxLayout(group)
+        layout.addWidget(self.use_motive)
+
+        server_label = QLabel("Motive server IP")
+        server_label.setBuddy(self.motive_server_ip)
+        layout.addWidget(server_label)
+        layout.addWidget(self.motive_server_ip)
+
+        interface_label = QLabel("Controller interface IP")
+        interface_label.setBuddy(self.motive_interface_ip)
+        layout.addWidget(interface_label)
+        layout.addWidget(self.motive_interface_ip)
+
+        layout.addWidget(self.motive_multicast)
         return group
 
     def _recording_group(self) -> QGroupBox:
         group = QGroupBox("Recording")
         form = QFormLayout(group)
         form.addRow(self.record_checkbox)
-        form.addRow("Recording rate", self.recording_rate)
+        form.addRow("Motive recording rate", self.recording_rate)
         output_row = QWidget()
         output_layout = QHBoxLayout(output_row)
         output_layout.setContentsMargins(0, 0, 0, 0)
@@ -195,9 +187,6 @@ class LivePlaybackTab(QWidget):
     def _control_group(self) -> QGroupBox:
         group = QGroupBox("Communication")
         layout = QVBoxLayout(group)
-        layout.addWidget(self.install_checkbox)
-        layout.addWidget(self.set_time_checkbox)
-        layout.addWidget(self.leave_running_checkbox)
         layout.addWidget(self.save_button)
         buttons = QHBoxLayout()
         buttons.addWidget(self.start_button)
@@ -211,10 +200,6 @@ class LivePlaybackTab(QWidget):
         if chosen:
             self.output_directory.setText(chosen)
 
-    @staticmethod
-    def _port_text(edit: QLineEdit) -> int:
-        return int(edit.text().strip())
-
     def _recording_rate_value(self) -> int | None:
         text = self.recording_rate.currentText()
         return None if text == "None" else int(text.split()[0])
@@ -222,26 +207,20 @@ class LivePlaybackTab(QWidget):
     def _runtime_config(self):
         return override_testbed(
             self.base_config,
-            controller_ip=self.controller_ip.text().strip(),
-            data_port=self._port_text(self.data_port),
-            multicast_group=self.multicast_group.text().strip(),
+            motive_interface_ip=self.motive_interface_ip.text().strip(),
             output_directory=self.output_directory.text().strip(),
-            devices_enabled=self.use_pis.isChecked(),
-            device_network_prefix=self.pi_network_edit.text().strip(),
-            sample_rate_hz=self.sample_rate.value(),
-            sdr_host=self.sdr_host_edit.text().strip(),
-            sdr_port=self._port_text(self.sdr_port),
+            sdr_enabled=self.use_sdr.isChecked(),
+            sdr_recording_rate_hz=self.sdr_rate.value(),
+            sdr_receivers=self.sdr_receivers.values(),
             motive_enabled=self.use_motive.isChecked(),
             motive_server_ip=self.motive_server_ip.text().strip(),
             motive_use_multicast=self.motive_multicast.isChecked(),
-            recording_rate_hz=self._recording_rate_value(),
+            motive_recording_rate_hz=self._recording_rate_value(),
         )
 
     def _save_settings(self) -> None:
         try:
             config = self._runtime_config()
-            if self.nodes_edit.text().strip():
-                config = replace(config, devices=config.select_devices(self.nodes_edit.text().strip()))
             save_testbed(config, self.config_path)
             self.base_config = load_testbed(self.config_path)
             self.status_label.setText(f"Saved {self.config_path}")
@@ -253,21 +232,16 @@ class LivePlaybackTab(QWidget):
             return
         try:
             config = self._runtime_config()
-            use_pis = self.use_pis.isChecked()
+            use_sdr = self.use_sdr.isChecked()
             use_motive = self.use_motive.isChecked()
-            if not use_pis and not use_motive:
-                raise ValueError("Select Raspberry Pis, Motive, or both.")
-            devices = config.select_devices(self.nodes_edit.text().strip()) if use_pis else ()
+            if not use_sdr and not use_motive:
+                raise ValueError("Select SDR, Motive, or both.")
             session = LiveAcquisitionSession(
                 config,
-                devices,
-                use_pis=use_pis,
+                use_sdr=use_sdr,
                 use_motive=use_motive,
                 record=self.record_checkbox.isChecked(),
                 name=self.run_name.text().strip() or "live",
-                install_pis=self.install_checkbox.isChecked(),
-                set_pi_time=self.set_time_checkbox.isChecked(),
-                leave_pis_running=self.leave_running_checkbox.isChecked(),
             )
         except Exception as exc:
             self.status_label.setText(f"Start settings error: {exc}")
@@ -415,9 +389,23 @@ class LivePlaybackTab(QWidget):
 
     def _update_status_runtime(self, session: LiveAcquisitionSession) -> None:
         parts: list[str] = []
-        if session.use_pis:
-            samples = session.latest_pi_samples()
-            parts.append(f"Pis {len(samples)}/{len(session.devices)}")
+        if session.use_sdr:
+            samples = session.latest_sdr_samples()
+            statuses = session.sdr_status()
+            total = len(session.config.sdr.receivers)
+            parts.append(f"SDR {len(samples)}/{total} receivers sampled at {session.config.sdr.recording_rate_hz:g} Hz")
+            receiver_parts = []
+            for receiver in session.config.sdr.receivers:
+                sample = samples.get(receiver.node)
+                status = statuses.get(receiver.node)
+                if status is not None and status.error:
+                    receiver_parts.append(f"{receiver.node}: error {status.error}")
+                elif sample is None:
+                    receiver_parts.append(f"{receiver.node}: waiting")
+                else:
+                    receiver_parts.append(f"{receiver.node}: {sample.value:.6g}")
+            if receiver_parts:
+                parts.append(" | ".join(receiver_parts))
         if session.use_motive:
             frame = session.latest_motive_frame()
             parts.append("Motive waiting" if frame is None else f"Motive frame {frame.frame_number} | bodies {len(frame.bodies)}")

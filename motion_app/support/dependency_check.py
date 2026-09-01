@@ -11,6 +11,7 @@ IMPORT_ALIASES = {
     "PySide6": "PySide6.QtCore",
     "vtk": "vtkmodules.vtkRenderingCore",
     "PyOpenGL": "OpenGL.GL",
+    "pyzmq": "zmq",
 }
 
 
