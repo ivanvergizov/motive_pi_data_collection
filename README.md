@@ -1,12 +1,34 @@
-# Position Plotter
+# Motive + SDR Data Collection GUI
 
-Position Plotter is a PySide6 application for loading Motive CSV files, plotting rigid-body signals, viewing recorded motion in 3D, receiving live Motive data and SDR power measurements, recording live data, and exporting video.
+This project supports three ways to collect or inspect live data:
 
-Live SDR acquisition is controller-native. The controller opens one ZeroMQ SUB connection for every configured SDR receiver Pi, keeps each receiver as a distinct source, and snapshots the latest value from every receiver at the configured controller-side SDR measurement rate. The previous Raspberry Pi UDP sender, clock-sync, SSH deployment, and `devices` configuration path is no longer used.
+1. the full GUI,
+2. the simple command-line live acquisition program,
+3. the single-frame NatNet diagnostic.
 
-## Installation
+The sections below describe how to use each one, the network communication they rely on, and the files that implement them.
 
-Install the Python packages from the project directory.
+## Single-frame NatNet check
+
+For the quickest Motive/NatNet connectivity test, run the included single-frame utility from the project root:
+
+```powershell
+py motive_data_collection_single_frame/single_frame.py -s <SERVER_IP> -c <CONTROLLER_IP>
+```
+
+Example:
+
+```powershell
+py motive_data_collection_single_frame/single_frame.py -s 10.1.1.51 -c 10.1.1.52
+```
+
+`-s` is the IP address of the computer running Motive/NatNet. `-c` is the local IP address of the computer running the script on the NatNet network. Unicast is used by default. Add `-m` for multicast.
+
+The program performs the NatNet connection handshake, waits for one rigid-body frame, prints the frame number, rigid-body IDs, tracking-valid values, positions, and quaternions, then exits.
+
+## Full GUI usage
+
+### Install dependencies
 
 Windows:
 
@@ -20,9 +42,7 @@ Linux:
 python3 -m pip install -r requirements.txt
 ```
 
-`pyzmq` is required for SDR acquisition because the controller connects directly to the GNU Radio ZeroMQ power publishers.
-
-## Start the GUI
+### Start the GUI
 
 Windows:
 
@@ -36,125 +56,203 @@ Linux:
 python3 position_plotter_gui.pyw
 ```
 
-The main window contains Signal Plots, Recorded 3D, Live, and Export tabs.
+The GUI contains Signal Plots, Recorded 3D, Live, and Export workspaces.
 
-## Data folders
+### Live workspace
 
-`csv_data/` contains Motive CSV input files such as `test2.csv`. `csv_renders/` is available for rendered CSV-related output. `live_csv_output/` is the default directory for live SDR and Motive CSV recordings.
+The Live workspace starts and monitors Motive and SDR acquisition.
 
-## Live SDR power acquisition
+#### SDR inputs
 
-Enable `SDR / GNU Radio power receivers` in the Live tab to collect power measurements directly from one or more receiver Pis.
+- **Enable SDR receivers** — enables the configured GNU Radio/ZeroMQ receivers for the run.
+- **SDR recording rate** — controller-side rate used to snapshot the newest measurement from all configured SDR receivers.
+- **Node** — numeric identity for an SDR receiver. It is also used in the SDR CSV column name.
+- **Host** — IP address or hostname of the machine publishing that receiver's ZeroMQ data.
+- **Port** — ZeroMQ TCP port for that receiver, normally `55555`.
+- **Add receiver / Remove selected** — edits the receiver list.
 
-Each configured receiver has three fields: a stable numeric `node` ID used for source attribution, a `host` name or IPv4 address, and the GNU Radio ZeroMQ `port`. The controller connects to each receiver at `tcp://host:port` simultaneously.
+Each SDR receiver must have a unique node number and endpoint.
 
-The receiver expects GNU Radio power messages containing one or more little-endian float32 values. For each newly received ZMQ message, the controller computes the arithmetic mean of every float32 value in that message. This matches `SDR_control/get_power_measurements.py`, which converts the newest ZMQ message to a float32 array and applies `np.average()`. The previous last-float decoder is retained only as a legacy helper and is not used for live values, recording, status, or display.
+#### Motive inputs
 
-Incoming ZeroMQ data is consumed as quickly as it arrives and the newest per-message average is retained independently for each receiver. `get_power_measurements.py` does not contain a configurable averaging-duration/window: its `-t` option only delays repeated measurement reads. The number of float32 values inside each GNU Radio ZMQ message determines what is averaged by this application. `sdr.recording_rate_hz` is a controller-side sampling rate: at each sampling tick, the controller snapshots the newest available averaged value for every receiver. A slow receiver therefore retains its most recent value until it publishes another measurement; a receiver that has not produced its first valid value remains blank in the recording and is reported as waiting.
+- **Enable Motive / NatNet** — enables Motive/NatNet acquisition for the run.
+- **Motive server IP** — IP address of the computer running Motive/NatNet.
+- **Controller interface IP** — local IP address of the computer running this program on the network used for NatNet communication.
+- **Motive multicast** — unchecked for unicast; checked for multicast.
+- **Motive recording rate** — limits how frequently received Motive frames are written. `None` records every received frame.
 
-Receiver identity is never inferred from message arrival order. Every socket is permanently associated with the configured `node`, so measurements remain attributable to the correct Pi even when streams publish at different rates.
+#### Recording inputs
 
-## SDR status and errors
+- **Record CSV files** — enables live CSV recording.
+- **Output directory** — parent directory for recording folders.
+- **Run name** — prefix used in the recording directory name.
 
-The Live tab and standalone runner report how many configured SDR receivers have produced sampled data. The GUI also reports each receiver node as waiting, receiving with its current value, or in an error state.
-
-ZeroMQ `connect()` is asynchronous, so a receiver that is powered off or has no publisher normally appears as waiting rather than producing an immediate connection error. Invalid payload sizes are reported against the specific receiver node without mixing that receiver with any other source.
-
-## Live Motive data
-
-Enable `Motive / NatNet` in the Live tab to receive rigid-body data.
-
-The NatNet client uses command port 1510, data port 1511, and multicast group 239.255.42.99. Rigid-body names are read from Motive model definitions and associated with live poses by rigid-body ID.
-
-In the Live tab, `Motive server IP` is the address of the computer running Motive/NatNet. `Controller interface IP` is the local controller address/interface used for NatNet traffic and multicast membership. For same-machine unicast operation, use a Motive server IP of `127.0.0.1`, disable Motive multicast, and use loopback networking. For multicast operation, enable Motive multicast and set `motive.interface_ip` to the controller address on the Motive network.
-
-## Live recording
-
-Enable `Record CSV files` to create a recording directory. Files are created only for the live sources selected for that run.
-
-An SDR run writes:
+A run can produce:
 
 ```text
 sdr_samples.csv
-```
-
-A Motive run writes:
-
-```text
 motive_rigid_bodies.csv
 ```
 
-A combined run writes both files.
+`sdr_samples.csv` contains elapsed time and one measurement column per configured SDR node. `motive_rigid_bodies.csv` contains Motive rigid-body position, quaternion, and tracking-valid data.
 
-### `sdr_samples.csv`
+#### Starting and stopping
 
-The SDR file records one controller-side snapshot per sampling tick after at least one receiver has produced a measurement. Columns are permanently tied to receiver node IDs. For example:
+- **Save settings to testbed.json** saves the current live settings.
+- **Start communication** starts the selected data sources.
+- **Stop communication** stops the live session and finishes recording.
+
+The status area reports the latest SDR receiver state and the newest Motive frame information.
+
+### Signal Plots workspace
+
+Use Signal Plots to inspect a recorded Motive CSV.
+
+Main inputs:
+
+- Motive CSV file
+- rigid bodies and signals to plot
+- raw, interpolated, or smoothed values
+- smoothing window
+- vertical scaling for position, Euler, and quaternion signals
+
+### Recorded 3D workspace
+
+Use Recorded 3D to play back a recorded Motive CSV.
+
+Main inputs:
+
+- Motive CSV file
+- rigid bodies to display
+- body display type
+- smoothing settings
+- playback time and speed
+- preview frame rate
+
+### Export workspace
+
+Use Export to create a video from a recorded Motive CSV.
+
+Main inputs:
+
+- Motive CSV file
+- output video file
+- rigid bodies to include
+- start and end time
+- smoothing settings
+- output resolution
+- output frame rate
+- MSAA/SSAA settings
+- codec
+- FFmpeg executable if it is not found automatically
+
+## Simple command-line live acquisition
+
+The same live Motive and SDR acquisition can be run without the GUI using `run_sdr_motive.py`.
+
+At least one source must be selected explicitly.
+
+### SDR only
+
+```powershell
+py run_sdr_motive.py --sdr
+```
+
+### Motive only
+
+```powershell
+py run_sdr_motive.py --motive
+```
+
+### SDR and Motive together
+
+```powershell
+py run_sdr_motive.py --sdr --motive
+```
+
+### Main flags
 
 ```text
-time_s,sdr_165,sdr_166
-0.000000000,-41.25,-39.875
-0.100000000,-41.50,-39.875
+--config PATH                 override the default testbed.json path
+--sdr                         run the configured SDR receivers
+--motive                      run the Motive/NatNet receiver
+--motive-multicast            override Motive transport to multicast
+--motive-unicast              override Motive transport to unicast
+--output-directory PATH       override controller.output_directory
+--duration SECONDS            stop after the specified duration; 0 runs until Ctrl+C
+--name NAME                   recording/run name
+--no-record                   run without writing CSV files
+--motive-recording-rate RATE  override motive.recording_rate_hz
+--sdr-recording-rate RATE     override sdr.recording_rate_hz
+--motive-interface-ip IP      override motive.interface_ip
+--motive-server-ip IP         override motive.server_ip
+--status-interval SECONDS     set how often status is printed
 ```
 
-`time_s` is elapsed decimal seconds for the SDR recording and starts at `0.000000000` on the first recorded SDR snapshot, matching the relative-time convention used by the recorded Motive file. Every receiver represented in a row is sampled at the same controller tick. If a configured receiver has not produced any value yet, its cell is blank. `sdr.recording_rate_hz` controls this sampling and recording cadence and accepts any positive value up to 100000 Hz.
+The source-selection flags determine what is started for that command. Configuration values that are not overridden are read from `testbed.json`.
 
-### `motive_rigid_bodies.csv`
-
-The Motive file retains the existing Motive-style seven-row Quaternion layout. Every recorded row contains one complete Motive frame. Invalid rigid-body transforms are blank and the corresponding `Tracking Valid` value is `0`.
-
-`motive.recording_rate_hz` controls only Motive CSV rate limiting. It accepts `null`, `120`, `60`, `30`, `15`, `10`, `5`, or `1`. `null` records every received Motive frame. This is intentionally separate from the SDR measurement rate.
-
-The two rates do different jobs. `sdr.recording_rate_hz` controls how often the controller snapshots the latest averaged SDR value and therefore sets the SDR CSV row cadence. `motive.recording_rate_hz` only limits which already-received Motive frames are written to the Motive CSV; it does not change the NatNet receive rate or SDR cadence.
-
-Relative recording paths are resolved from the directory containing `testbed.json`.
-
-## Live GUI controls
-
-The Live tab provides one SDR enable control, an SDR recording-rate control, and an editable receiver table. Use `Add receiver` to create another receiver row and `Remove selected` to delete selected rows. Each row exposes node, host, and ZeroMQ port directly.
-
-The same tab contains the Motive settings, recording destination and Motive recording rate, save/start/stop controls, smoothing, and preview settings. `Save settings to testbed.json` writes the same configuration model used by the standalone acquisition command.
-
-The former Pi-node range, Pi multicast network, Pi sample-rate, Pi clock setting, SSH install/update, and leave-sender-running controls have been removed because the controller no longer launches or receives from a separate Pi UDP sender process.
-
-## Standalone live acquisition
-
-The non-GUI entry point uses the same `LiveAcquisitionSession` and `SdrReceiver` implementation as the GUI.
-
-SDR only:
+### Example with explicit Motive addresses
 
 ```powershell
-py run_sdr_motive.py --sdr --duration 10 --name sdr_test
+py run_sdr_motive.py --motive --motive-unicast --motive-server-ip 10.1.1.51 --motive-interface-ip 10.1.1.52
 ```
 
-Motive only:
+### Example with both sources and a fixed duration
 
 ```powershell
-py run_sdr_motive.py --motive --motive-unicast --duration 10 --name motive_test
+py run_sdr_motive.py --sdr --motive --duration 30 --name test_run
 ```
 
-SDR and Motive:
+### Run without recording
 
 ```powershell
-py run_sdr_motive.py --sdr --motive --duration 30 --name combined
+py run_sdr_motive.py --sdr --motive --no-record
 ```
 
-Override the controller-side SDR sampling rate for one run:
+## Single-frame command-line inputs
+
+The included single-frame utility can be used independently of both the GUI and `run_sdr_motive.py`.
+
+Show its help:
 
 ```powershell
-py run_sdr_motive.py --sdr --sdr-recording-rate 25 --duration 30 --name sdr_25hz
+py motive_data_collection_single_frame/single_frame.py --help
 ```
 
-Limit Motive CSV recording to 30 Hz while leaving SDR at its configured rate:
+Required flags:
+
+```text
+-s, --server-ip IP       NatNet server IP
+-c, --controller-ip IP   local IPv4 address of this computer on the NatNet network
+```
+
+Optional flags:
+
+```text
+-m, --multicast          use multicast; unicast is the default
+-t, --timeout SECONDS    frame wait timeout; default 5 seconds
+--command-port PORT      NatNet command port; default 1510
+--data-port PORT         NatNet data port; default 1511
+--multicast-group IP     NatNet multicast group; default 239.255.42.99
+```
+
+Unicast example:
 
 ```powershell
-py run_sdr_motive.py --sdr --motive --motive-recording-rate 30 --duration 30 --name combined
+py motive_data_collection_single_frame/single_frame.py -s 10.1.1.51 -c 10.1.1.52
 ```
 
-Use `--motive-recording-rate none` to record every received Motive frame. Configuration-derived command-line options are described as overrides in `--help`; for example, `--sdr-recording-rate`, `--motive-recording-rate`, `--motive-interface-ip`, `--motive-server-ip`, and `--output-directory` replace the corresponding `testbed.json` value for that run. Use `--no-record` to disable CSV recording. There are intentionally no `--no-sdr` or `--no-motive` flags: the standalone runner starts only the sources explicitly named with `--sdr` and/or `--motive`, regardless of the saved GUI enabled state. Receiver node/host/port definitions still come from `sdr.receivers` in the selected config file, which prevents the GUI and command-line paths from maintaining separate receiver implementations.
+Multicast example:
 
-## `testbed.json`
+```powershell
+py motive_data_collection_single_frame/single_frame.py -s 10.1.1.51 -c 10.1.1.52 -m
+```
 
-The current configuration shape is:
+The program prints the NatNet/Motive versions after a successful handshake, waits for one frame, prints the rigid-body information from that frame, and exits.
+
+## `testbed.json` inputs
+
+The GUI and simple command-line live acquisition use `testbed.json`.
 
 ```json
 {
@@ -165,60 +263,230 @@ The current configuration shape is:
     "enabled": true,
     "recording_rate_hz": 10.0,
     "receivers": [
-      {
-        "node": 165,
-        "host": "10.1.1.165",
-        "port": 55555
-      },
-      {
-        "node": 166,
-        "host": "10.1.1.166",
-        "port": 55555
-      }
+      {"node": 165, "host": "10.1.1.165", "port": 55555},
+      {"node": 166, "host": "10.1.1.166", "port": 55555}
     ]
   },
   "motive": {
     "enabled": true,
     "server_ip": "10.1.1.51",
-    "interface_ip": "10.1.1.51",
+    "interface_ip": "10.1.1.52",
     "use_multicast": false,
     "recording_rate_hz": null
   }
 }
 ```
 
-`testbed.schema.json` documents the machine-readable JSON Schema for the configuration. Runtime validation additionally rejects duplicate receiver node IDs and duplicate ZeroMQ endpoints, checks host/port/rate ranges, requires at least one receiver when SDR is enabled, and gives explicit migration errors for the removed `devices`, `sync`, `ssh`, `sdr.host`, `sdr.port`, top-level `recording_rate_hz`, and old `controller.ip` formats.
+Main values:
 
-The old `devices` subsystem is intentionally not preserved as hidden compatibility configuration. Existing custom configs must migrate SDR endpoints into `sdr.receivers`. The old generic top-level `recording_rate_hz` becomes `motive.recording_rate_hz`; SDR always uses `sdr.recording_rate_hz`. The old `controller.ip` field is now `motive.interface_ip` because that local interface address is used only by NatNet networking.
+- `controller.output_directory` — parent directory for live recordings.
+- `sdr.enabled` — saved GUI SDR enabled state.
+- `sdr.recording_rate_hz` — controller SDR snapshot/recording rate.
+- `sdr.receivers[].node` — receiver identity and CSV column identity.
+- `sdr.receivers[].host` — receiver's ZeroMQ host/IP.
+- `sdr.receivers[].port` — receiver's ZeroMQ TCP port.
+- `motive.enabled` — saved GUI Motive enabled state.
+- `motive.server_ip` — Motive/NatNet server address.
+- `motive.interface_ip` — local interface used for NatNet traffic.
+- `motive.use_multicast` — `false` for unicast or `true` for multicast.
+- `motive.recording_rate_hz` — Motive CSV recording-rate limit; `null` records every received frame.
 
-## Recorded Motive CSV files
+## Network structure and communication
 
-The Signal Plots, Recorded 3D, and Export tabs use Motive-style rigid-body CSV files. The loader expects seven header rows. Rigid-body transform columns are identified from the Type, Name, transform, and dimension header rows. Supported rotation encodings are Quaternion and XYZ.
+### Motive / NatNet
 
-The live Motive recorder writes Quaternion data in the same seven-row layout. Each rigid body receives Rotation X/Y/Z/W and Position X/Y/Z columns followed by a `Tracking Valid` column.
+The computer running this program acts as the NatNet client. The computer running Motive acts as the NatNet server.
 
-## Video export
+```text
+Controller / client                         Motive / server
+motive.interface_ip                         motive.server_ip
+        |                                          |
+        |------ NatNet command traffic ---------->| UDP 1510
+        |<----- server/command responses ----------|
+        |                                          |
+        |<----- NatNet frame data -----------------|
+```
 
-Video export behavior is unchanged by the SDR refactor. The Export tab uses the recorded Motive CSV path, PyVista/VTK rendering, and FFmpeg encoding settings already present in the application.
+The default NatNet command port is UDP `1510`. The default NatNet data port is UDP `1511`.
 
-## File and function reference
+At connection startup the NatNet client sends a connection request and waits for server information. The full live client then obtains model definitions so rigid-body IDs can be associated with names and processes the incoming rigid-body frames.
 
-The SDR-related live implementation is now centered on these files:
+Each rigid body provides:
 
-`motion_app/live/testbed.py` defines the controller, SDR receiver list, Motive configuration, validation, load/override/save behavior, and migration errors.
+- rigid-body ID
+- X/Y/Z position
+- quaternion X/Y/Z/W
+- tracking-valid state
 
-`motion_app/live/sdr_receiver.py` owns all ZeroMQ receiver sockets, computes the per-message float32 average used everywhere in the application, retains the latest average per receiver, and runs the single controller-side SDR sampling scheduler.
+The application timestamps received Motive frames on the controller.
 
-`motion_app/live/acquisition_session.py` is the shared GUI/headless live backend and starts/stops SDR, Motive, and recording.
+#### Unicast
 
-`motion_app/live/recording.py` writes attributed SDR snapshots to `sdr_samples.csv` and Motive frames to `motive_rigid_bodies.csv`.
+With unicast selected, communication is directed between the configured client and server addresses. `motive.interface_ip` identifies the local controller interface and `motive.server_ip` identifies the Motive computer.
 
-`motion_app/ui/widgets/sdr_receivers.py` implements the add/remove/edit receiver table used by the Live tab.
+#### Multicast
 
-`motion_app/ui/tabs/live_tab.py` binds GUI controls to the shared configuration and acquisition backend.
+With multicast selected, the client joins the NatNet multicast group `239.255.42.99` through `motive.interface_ip` and receives NatNet data on the multicast data path.
 
-`run_sdr_motive.py` is the standalone controller-side SDR/Motive entry point.
+### Single-frame NatNet communication
 
-The following legacy transport files are removed because no active feature depends on them: root `rpi_udp_controller.py`, root `setup_windows_ssh.py`, root `run_rpi_motive_udp.py`, `motion_app/live/pi_receiver.py`, `motion_app/live/pi_sender.py`, `motion_app/live/protocol.py`, `motion_app/live/rpi_udp_controller.py`, and `motion_app/live/setup_windows_ssh.py`.
+The single-frame utility uses the same basic command-side connection information:
 
-All recorded-data plotting, 3D playback, Motive NatNet receiving, rendering, geometry, signal processing, and video export modules remain otherwise unchanged.
+```text
+single_frame.py
+     |
+     | NAT_CONNECT / UDP command traffic
+     v
+NatNet server
+     |
+     | server information
+     v
+single_frame.py
+     |
+     | first rigid-body frame
+     v
+print frame and exit
+```
+
+The utility does not record data or run the rest of the application. Its output is limited to the first frame it receives.
+
+### SDR / GNU Radio
+
+Each SDR receiver publishes measurement data through a ZeroMQ TCP endpoint.
+
+```text
+Receiver 165 / GNU Radio ---- TCP/ZMQ ----\
+                                         \
+Receiver 166 / GNU Radio ---- TCP/ZMQ -----> Controller
+                                         /
+Receiver N / GNU Radio ------ TCP/ZMQ ----/
+```
+
+The controller creates one ZeroMQ SUB socket for each configured receiver. Each socket remains associated with that receiver's configured node number.
+
+A received ZMQ message is interpreted as an array of `float32` values. The values in the newest message are averaged to produce that receiver's current power measurement. The newest average is retained independently for each receiver.
+
+`sdr.recording_rate_hz` controls how often the controller creates a snapshot of all current SDR values. It does not change the GNU Radio publication rate. If a receiver has not produced a newer value by the next snapshot, its most recently received value remains the current value.
+
+### Recording
+
+Live Motive and SDR recording is coordinated by the same acquisition session.
+
+```text
+SDR ZMQ receivers ----\
+                       >---- LiveAcquisitionSession ---- CsvSessionRecorder ---- CSV files
+Motive NatNet --------/
+```
+
+SDR rows use controller-side snapshot timing. Motive rows use controller receive timing. Recorded CSV time is represented as elapsed decimal seconds.
+
+## Project folders, files, and main functions
+
+### Top-level files
+
+- `position_plotter_gui.pyw` — GUI entry point. Creates the Qt application and opens the main window.
+- `run_sdr_motive.py` — simple command-line live acquisition entry point. Parses flags, loads configuration, starts the requested sources, prints status, and stops the session.
+- `testbed.json` — Motive, SDR, and recording configuration used by the GUI and simple live runner.
+- `testbed.schema.json` — schema for validating the configuration file.
+- `requirements.txt` — Python package requirements for the full application.
+- `rigid_body_types.csv` — mapping from Motive rigid-body names to display body types.
+- `motive_data_collection_single_frame/` — standalone one-frame NatNet diagnostic included with the project.
+
+### `motion_app/live/`
+
+This folder contains the communication and live recording backend used by both the GUI and the simple command-line runner.
+
+- `testbed.py` — configuration loading, validation, temporary overrides, and saving.
+  - `load_testbed()` reads `testbed.json`.
+  - `override_testbed()` applies command-line or GUI overrides.
+  - `save_testbed()` writes current settings.
+- `natnet_client.py` — low-level NatNet UDP communication and packet parsing.
+  - creates command/data sockets,
+  - performs the NatNet connection handshake,
+  - receives server information and model definitions,
+  - parses streamed rigid-body frames.
+- `motive_receiver.py` — application-level Motive receiver.
+  - associates body IDs with names,
+  - timestamps frames,
+  - stores the newest frame,
+  - forwards frames to recording callbacks.
+- `sdr_receiver.py` — ZeroMQ SDR receiver manager.
+  - creates one SUB socket per receiver,
+  - reads newest messages,
+  - averages the `float32` values in each message,
+  - retains the latest measurement per node,
+  - creates controller-rate SDR snapshots.
+- `acquisition_session.py` — shared live coordinator.
+  - `start()` starts recording and the selected receivers.
+  - `stop()` shuts down receivers and recording.
+  - latest-value methods provide current Motive and SDR status to the GUI or CLI.
+- `recording.py` — background CSV writer.
+  - writes SDR snapshots to `sdr_samples.csv`,
+  - writes Motive frames to `motive_rigid_bodies.csv`,
+  - closes files after queued writes finish.
+
+### `motive_data_collection_single_frame/`
+
+- `single_frame.py` — parses the one-frame command-line flags, starts the minimal NatNet client, waits for one frame, prints it, and exits.
+  - `ipv4()` validates IPv4 inputs.
+  - `port()` validates UDP ports.
+  - `build_parser()` defines the CLI flags.
+  - `main()` controls the connection, wait, print, and shutdown sequence.
+- `natnet_client.py` — minimal NatNet transport/parser for the diagnostic.
+  - `NatNetSingleFrameClient.start()` creates sockets and performs the handshake.
+  - `stop()` closes the connection resources.
+  - `_send_connect()` sends the NatNet connection request.
+  - `_send_keepalive()` maintains the unicast command connection while waiting.
+  - `_receive_loop()` receives UDP packets.
+  - `_process_packet()` routes supported NatNet packet types.
+  - `_parse_server_info()` reads Motive/NatNet version information.
+  - `_parse_frame()` extracts rigid-body information from one frame.
+- `requirements.txt` — dependency information for the standalone single-frame diagnostic.
+
+### `motion_app/ui/`
+
+- `main_window.py` — main GUI window and workspace creation.
+- `tabs/live_tab.py` — live acquisition controls, configuration saving, start/stop handling, and live status.
+- `tabs/signal_plot_tab.py` — recorded Motive signal plotting.
+- `tabs/recorded_3d_tab.py` — recorded 3D playback.
+- `tabs/export_tab.py` — video export controls and worker management.
+- `plotting/multi_axis_signal_plot.py` — multi-axis position, Euler, and quaternion plotting.
+- `widgets/sdr_receivers.py` — SDR node/host/port editing table.
+- `widgets/body_selection.py` — rigid-body selection controls.
+- `widgets/signal_selection.py` — signal selection controls.
+- `widgets/playback_controls.py` — playback time, speed, play, pause, and seek controls.
+- `widgets/render_settings.py` — preview/export frame-rate and rendering inputs.
+- `widgets/smoothing_controls.py` — smoothing enable and window inputs.
+- `widgets/session_source.py` — Motive CSV file selection.
+- `widgets/sidebar.py` — shared GUI sidebar behavior.
+
+### `motion_app/core/`
+
+- `app_types.py` — shared types used across the application.
+- `motive_io.py` — loads recorded Motive CSV files.
+- `tracking_data.py` — supplies tracking data to plotting, playback, and export.
+- `signal_processing.py` — interpolation and smoothing of tracking signals.
+- `rigid_body_math.py` — coordinate, quaternion, and Euler conversions.
+- `playback_controller.py` — playback time, seek, and speed control.
+- `body_config.py` — loads rigid-body display-type mappings.
+- `room_geometry.py` — calculates room/display bounds.
+- `constants.py` — shared plotting, rendering, and export constants.
+
+### `motion_app/rendering/`
+
+- `pyvista_scene.py` — interactive 3D scene used by live and recorded views.
+- `pyvista_helpers.py` — body, room, camera, label, and scene-update helpers.
+- `scene_style.py` — shared 3D scene style and sizing constants.
+
+### `motion_app/geometry/`
+
+- `body_geometry.py` — creates the body meshes displayed in 3D.
+
+### `motion_app/exporting/`
+
+- `video_export.py` — FFmpeg command construction and video frame delivery.
+- `export_worker.py` — offscreen rendering process used during export.
+
+### `motion_app/support/`
+
+- `dependency_check.py` — checks the GUI/runtime Python dependencies before startup.
