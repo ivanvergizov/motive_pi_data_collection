@@ -3,7 +3,7 @@
     "output_directory": "live_csv_output"
   },
   "sdr": {
-    "enabled": true,
+    "enabled": false,
     "recording_rate_hz": 1.0,
     "receivers": [
       {
@@ -14,10 +14,10 @@
     ]
   },
   "motive": {
-    "enabled": false,
+    "enabled": true,
     "server_ip": "10.1.1.51",
-    "interface_ip": "10.1.1.51",
+    "interface_ip": "10.1.1.6",
     "use_multicast": false,
-    "recording_rate_hz": null
+    "recording_rate_hz": 1
   }
 }
