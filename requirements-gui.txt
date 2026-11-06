@@ -1,0 +1,9 @@
+-r requirements.txt
+
+pandas
+PySide6
+pyqtgraph
+pyvista
+pyvistaqt
+vtk
+PyOpenGL

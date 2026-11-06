@@ -1,0 +1,4 @@
+**/__pycache__/
+*.mp4
+live_csv_output/
+csv_renders/

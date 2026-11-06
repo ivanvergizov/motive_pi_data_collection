@@ -1,0 +1,23 @@
+{
+  "controller": {
+    "output_directory": "live_csv_output"
+  },
+  "sdr": {
+    "enabled": false,
+    "recording_rate_hz": 1.0,
+    "receivers": [
+      {
+        "node": 165,
+        "host": "10.1.1.165",
+        "port": 55555
+      }
+    ]
+  },
+  "motive": {
+    "enabled": true,
+    "server_ip": "10.1.1.51",
+    "interface_ip": "10.1.1.100",
+    "use_multicast": false,
+    "recording_rate_hz": 1
+  }
+}
