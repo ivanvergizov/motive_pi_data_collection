@@ -54,3 +54,29 @@ def calculate_room_bounds(positions_by_body: dict[str, np.ndarray], minimum_padd
     y_min, y_max, y_tick = calculate_room_axis_bounds(combined[:, 1], minimum_padding)
     z_min, z_max, z_tick = calculate_room_axis_bounds(combined[:, 2], minimum_padding)
     return RoomBounds(x_min, x_max, y_min, y_max, z_min, z_max, x_tick, y_tick, z_tick)
+
+
+def expand_room_bounds(
+    bounds: RoomBounds | None,
+    positions_by_body: dict[str, np.ndarray],
+    minimum_padding: float,
+) -> RoomBounds:
+    """Keep the existing room, expanding only axes crossed by a live body."""
+    if bounds is None:
+        return calculate_room_bounds(positions_by_body, minimum_padding)
+
+    positions = np.vstack(list(positions_by_body.values()))
+    axes = [
+        (bounds.x_min, bounds.x_max, bounds.x_tick),
+        (bounds.y_min, bounds.y_max, bounds.y_tick),
+        (bounds.z_min, bounds.z_max, bounds.z_tick),
+    ]
+    for axis, (low, high, _tick) in enumerate(axes):
+        values = positions[:, axis]
+        data_min, data_max = float(np.min(values)), float(np.max(values))
+        if data_min < low or data_max > high:
+            extent = np.array([min(low, data_min), max(high, data_max)])
+            axes[axis] = calculate_room_axis_bounds(extent, minimum_padding)
+
+    (x_min, x_max, x_tick), (y_min, y_max, y_tick), (z_min, z_max, z_tick) = axes
+    return RoomBounds(x_min, x_max, y_min, y_max, z_min, z_max, x_tick, y_tick, z_tick)

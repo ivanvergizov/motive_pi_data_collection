@@ -99,6 +99,19 @@ Live status updates twice per second. Hidden 3D previews skip drawing while
 collection, recording, and the playback clock continue. Switching back to a
 preview shows its current position.
 
+The live room expands when tracked bodies move outside its bounds and refits
+the camera to the expanded room. It does not shrink when bodies move back.
+The preview metrics show the GPU used for rendering after the first draw.
+
+On Windows laptops with integrated and dedicated graphics, choose the GPU in
+**Settings > System > Display > Graphics**. Add the Python executable running
+the GUI as a desktop app, select **High Performance**, and restart the GUI.
+To find that executable, run:
+
+```powershell
+py -c "import sys; print(sys.executable)"
+```
+
 Video export also requires FFmpeg with `libx264rgb` or `libx265` for the selected
 codec. Put FFmpeg on `PATH` or select its executable in the Export workspace.
 FFmpeg is not needed for collection, plotting, or playback.

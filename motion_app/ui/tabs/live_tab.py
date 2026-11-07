@@ -24,7 +24,7 @@ from PySide6.QtWidgets import (
 from motion_app.core.app_types import BodyDisplaySettings, BodyPose, SceneFrame
 from motion_app.core.body_config import DEFAULT_BODY_TYPE, load_body_type_map
 from motion_app.core.constants import DEFAULT_PREVIEW_AA, color_for_curve
-from motion_app.core.room_geometry import calculate_room_bounds
+from motion_app.core.room_geometry import expand_room_bounds
 from motion_app.live.acquisition_session import LiveAcquisitionSession
 from motion_app.live.motive_receiver import MotiveFrame
 from motion_app.live.testbed import DEFAULT_CONFIG_PATH, load_testbed, override_testbed, save_testbed
@@ -344,8 +344,10 @@ class LivePlaybackTab(QWidget):
             poses[body.name] = BodyPose(position=position, quaternion_xyzw=quaternion)
             display_positions[body.name] = position.reshape(1, 3)
 
-        if self.scene.bounds is None and display_positions:
-            self.scene.set_room_bounds(calculate_room_bounds(display_positions, minimum_padding=0.5))
+        if display_positions:
+            bounds = expand_room_bounds(self.scene.bounds, display_positions, minimum_padding=0.5)
+            if bounds != self.scene.bounds:
+                self.scene.set_room_bounds(bounds)
         if self._first_motive_time_ns is None:
             self._first_motive_time_ns = frame.received_time_ns
         elapsed = (frame.received_time_ns - self._first_motive_time_ns) / 1e9

@@ -40,6 +40,7 @@ class PyVistaRigidBodyScene(QWidget):
         self.render_ms: deque[float] = deque(maxlen=240)
         self.render_times: deque[float] = deque(maxlen=240)
         self._annotation_signature: tuple[int, int, float] | None = None
+        self.graphics_renderer = "pending first render"
 
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
@@ -130,6 +131,11 @@ class PyVistaRigidBodyScene(QWidget):
         self._sync_annotation_style()
         start = time.perf_counter()
         self.plotter.render()
+        if self.graphics_renderer == "pending first render":
+            for line in self.plotter.render_window.ReportCapabilities().splitlines():
+                if line.startswith("OpenGL renderer string:"):
+                    self.graphics_renderer = line.partition(":")[2].strip()
+                    break
         self.render_ms.append((time.perf_counter() - start) * 1000.0)
         self.render_times.append(time.perf_counter())
 
@@ -149,6 +155,7 @@ class PyVistaRigidBodyScene(QWidget):
         # actors or render passes in place.
         self._layout.removeWidget(old_plotter)
         self.plotter = self._create_plotter()
+        self.graphics_renderer = "pending first render"
         self._layout.addWidget(self.plotter)
         self._annotation_signature = None
 
@@ -206,6 +213,7 @@ class PyVistaRigidBodyScene(QWidget):
         lines.extend([
             f"Preview: {width}x{height} @ {dpr:.2f}x DPR | VTK {vtk_width}x{vtk_height}",
             f"AA: {self.actual_anti_aliasing_text()}",
+            f"GPU: {self.graphics_renderer}",
         ])
         return "\n".join(lines)
 
